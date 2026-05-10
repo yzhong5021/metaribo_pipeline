@@ -1,0 +1,3 @@
+sample,group,short_reads_1,short_reads_2,long_reads,short_reads_platform,long_reads_platform
+sample_01,sample_01,/path/to/sample_01_R1.fastq.gz,/path/to/sample_01_R2.fastq.gz,,ILLUMINA,
+sample_02,sample_02,/path/to/sample_02_R1.fastq.gz,/path/to/sample_02_R2.fastq.gz,,ILLUMINA,

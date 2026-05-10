@@ -1,0 +1,8 @@
+params_file: config/params.mag.yaml
+nextflow_config: config/nextflow.config
+samplesheet: config/samples.csv
+outdir: metagenome_preprocess
+apptainer_cache: .apptainer_cache
+work_dir: metagenome_preprocess
+local_outdir: output/metagenome
+log: logs/metagenome_preprocess.log

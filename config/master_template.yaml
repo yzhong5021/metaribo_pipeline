@@ -1,0 +1,6 @@
+root: /path/to/metaribo_pipeline
+scratch: /path/to/large/scratch/metaribo_pipeline
+file_manifest: file_manifest.json
+preprocess_params: config/ribo_preprocess.yaml
+metagenome_preprocess_params: config/metagenome_preprocess.yaml
+contig_annotation_params: config/contig_annotation.yaml

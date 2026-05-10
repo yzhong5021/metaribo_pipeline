@@ -1,0 +1,12 @@
+cat_params: "-r 7 --diamond_mode more-sensitive"
+cat_db: /path/to/CAT/db
+cat_tax: /path/to/CAT/tax
+bakta_db: /path/to/bakta/db
+bakta_params: ""
+kofam_profiles: /path/to/kofam/profiles
+kofam_list: /path/to/kofam/ko_list
+outdir: metagenome_annotation
+workdir: metagenome_annotation
+local_outdir: output/metagenome
+log: logs/contig_annotation.log
+threads: 16

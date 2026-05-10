@@ -1,0 +1,23 @@
+logs/
+output/
+output_mock/
+.nextflow/
+__pycache__/
+file_manifest*
+implementation_flow.md
+
+config/master.yaml
+config/master_mock_meta.yaml
+config/master_mock_ribo.yaml
+config/metagenome_preprocess.yaml
+config/metagenome_preprocess_mock.yaml
+config/contig_annotation.yaml
+config/contig_annotation_mock.yaml
+config/ribo_preprocess.yaml
+config/ribo_preprocess_mock.yaml
+config/samples.csv
+config/samples_mock.csv
+config/samples_ribo.csv
+config/samples_ribo_0306.csv
+config/samples copy.csv
+
