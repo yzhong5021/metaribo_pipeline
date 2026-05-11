@@ -11,14 +11,15 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from master_config import DEFAULT_MASTER_CONFIG, MasterConfigError, load_master
+
 try:
     import yaml
 except ImportError:
     yaml = None
 
 
-FALLBACK_ROOT = Path(__file__).resolve().parents[2]
-MASTER_CONFIG = Path(os.environ.get("MASTER_CONFIG", FALLBACK_ROOT / "config" / "master.yaml")).expanduser()
+MASTER_CONFIG = Path(os.environ.get("MASTER_CONFIG", DEFAULT_MASTER_CONFIG)).expanduser()
 SAMPLE_COLUMNS = [
     "sample",
     "group",
@@ -51,19 +52,10 @@ def load_yaml(path: Path) -> dict:
 
 
 def master_config(path: Path = MASTER_CONFIG) -> dict:
-    data = load_yaml(path)
-    root = Path(data["root"]).expanduser()
-    scratch = Path(data["scratch"]).expanduser()
-    paths = {}
-    for key, default in {
-        "file_manifest": root / "file_manifest.json",
-        "preprocess_params": root / "config" / "ribo_preprocess.yaml",
-        "metagenome_preprocess_params": root / "config" / "metagenome_preprocess.yaml",
-        "contig_annotation_params": root / "config" / "contig_annotation.yaml",
-    }.items():
-        value = Path(data.get(key, default)).expanduser()
-        paths[key] = value if value.is_absolute() else root / value
-    return {"root": root, "scratch": scratch, **paths}
+    try:
+        return load_master(path)
+    except MasterConfigError as exc:
+        fail(str(exc))
 
 
 def root_path(*parts: str | Path) -> Path:

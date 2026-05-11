@@ -33,14 +33,21 @@ from utils import (
 
 
 GENUS_RE = re.compile(r"([^\t;]+?)\s+\(genus\):\s*([0-9]+(?:\.[0-9]+)?)")
-CAT_COMMAND = "CAT_pack"
-BAKTA_COMMAND = "bakta"
-BEDTOOLS_COMMAND = "bedtools"
-EXEC_ANNOTATION_COMMAND = "exec_annotation"
+ANNOTATION_COMMANDS = {
+    "cat_pack": "CAT_pack",
+    "bakta": "bakta",
+    "bedtools": "bedtools",
+    "exec_annotation": "exec_annotation",
+}
 
 
 def annotation_local_outdir(cfg: dict) -> Path:
     return resolve_repo_path(cfg.get("local_outdir", ROOT / "output" / "metagenome"))
+
+
+def command_name(config: dict, key: str) -> str:
+    commands = config.get("commands", {})
+    return str(commands.get(key, ANNOTATION_COMMANDS[key]))
 
 
 def check_paths(manifest_path: Path, samplesheet: Path, annotation_config: Path, version_config: Path | None = None) -> None:
@@ -48,7 +55,8 @@ def check_paths(manifest_path: Path, samplesheet: Path, annotation_config: Path,
     samples = read_samplesheet(samplesheet, check_files=False)
     require_path(cfg["cat_db"], "CAT database folder", "dir")
     require_path(cfg["cat_tax"], "CAT taxonomy folder", "dir")
-    resolve_command(CAT_COMMAND)
+    for command_key in ANNOTATION_COMMANDS:
+        resolve_command(command_name(cfg, command_key))
     require_path(cfg["bakta_db"], "Bakta database", "dir")
     require_path(cfg["kofam_profiles"], "Kofam profiles", "dir")
     require_path(cfg["kofam_list"], "Kofam ko_list", "file")
@@ -66,18 +74,18 @@ def check_paths(manifest_path: Path, samplesheet: Path, annotation_config: Path,
 def config_shell(annotation_config: Path, version_config: Path | None = None) -> str:
     cfg = load_yaml(annotation_config)
     outdir = resolve_scratch_path(cfg["outdir"])
-    workdir = resolve_work_path()
+    workdir = resolve_work_path("metagenome_annotation")
     local_outdir = annotation_local_outdir(cfg)
     values = {
-        "CAT_PATH": resolve_command(CAT_COMMAND),
+        "CAT_PATH": resolve_command(command_name(cfg, "cat_pack")),
         "CAT_PARAMS": cfg.get("cat_params", ""),
         "CAT_DB": cfg.get("cat_db", ""),
         "CAT_TAX": cfg.get("cat_tax", ""),
-        "BAKTA": resolve_command(BAKTA_COMMAND),
+        "BAKTA": resolve_command(command_name(cfg, "bakta")),
         "BAKTA_DB": cfg["bakta_db"],
         "BAKTA_PARAMS": cfg.get("bakta_params", ""),
-        "BEDTOOLS": resolve_command(BEDTOOLS_COMMAND),
-        "EXEC_ANNOTATION": resolve_command(EXEC_ANNOTATION_COMMAND),
+        "BEDTOOLS": resolve_command(command_name(cfg, "bedtools")),
+        "EXEC_ANNOTATION": resolve_command(command_name(cfg, "exec_annotation")),
         "KOFAM_PROFILES": cfg["kofam_profiles"],
         "KOFAM_LIST": cfg["kofam_list"],
         "THREADS": cfg["threads"],

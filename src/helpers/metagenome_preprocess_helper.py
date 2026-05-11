@@ -36,12 +36,26 @@ from utils import (
 NEXTFLOW_COMMAND = "nextflow"
 
 
+def needs_gtdb_db(cfg: dict) -> bool:
+    params = load_yaml(resolve_repo_path(cfg["params_file"]))
+    skip_gtdbtk = params.get("skip_gtdbtk", False)
+    return str(skip_gtdbtk).strip().lower() not in {"true", "1", "yes"}
+
+
+def gtdb_db_path(cfg: dict) -> str:
+    gtdb_db = str(cfg.get("gtdb_db", "")).strip()
+    if needs_gtdb_db(cfg) and not gtdb_db:
+        fail(f"{cfg['params_file']} runs GTDB-Tk, so metagenome preprocess config must set gtdb_db")
+    return gtdb_db
+
+
 def check_paths(metagenome_preprocess_config: Path, version_config: Path | None = None, check_fastq_integrity: bool = False) -> None:
     cfg = load_yaml(metagenome_preprocess_config)
-    if cfg.get("gtdb_db"):
-        require_path(cfg["gtdb_db"], "GTDB-Tk database", "dir")
+    gtdb_db = gtdb_db_path(cfg)
+    if gtdb_db:
+        require_path(gtdb_db, "GTDB-Tk database", "dir")
     ensure_dir(resolve_scratch_path(cfg["apptainer_cache"]))
-    ensure_dir(resolve_work_path(cfg.get("work_dir", "metagenome_preprocess")))
+    ensure_dir(resolve_work_path("metagenome_preprocess"))
     rows = read_samplesheet(resolve_repo_path(cfg["samplesheet"]), check_files=True, check_integrity=check_fastq_integrity)
     print(f"paths are all valid for {len(rows)} nf-core/mag samples")
 
@@ -56,9 +70,9 @@ def command_shell(metagenome_preprocess_config: Path) -> str:
         "SAMPLESHEET": resolve_repo_path(cfg["samplesheet"]),
         "OUTDIR": resolve_scratch_path(cfg["outdir"]),
         "LOCAL_OUTDIR": local_outdir,
-        "GTDB_DB": cfg.get("gtdb_db", ""),
+        "GTDB_DB": gtdb_db_path(cfg),
         "APPTAINER_CACHEDIR": resolve_scratch_path(cfg["apptainer_cache"]),
-        "WORK_DIR": resolve_work_path(cfg.get("work_dir", "metagenome_preprocess")),
+        "WORK_DIR": resolve_work_path("metagenome_preprocess"),
     }
     return shell_assignments(values)
 

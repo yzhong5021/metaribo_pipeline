@@ -10,6 +10,8 @@ from pathlib import Path
 import yaml
 
 
+FALLBACK_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MASTER_CONFIG = FALLBACK_ROOT / "config" / "master.yaml"
 STAGE_DEFAULTS = {
     "file_manifest": "file_manifest.json",
     "preprocess_params": "config/ribo_preprocess.yaml",
@@ -45,9 +47,12 @@ def load_master(master_config: Path) -> dict[str, Path]:
     cfg = load_yaml(master_config)
     if "root" not in cfg:
         raise MasterConfigError(f"{master_config} is missing required key: root")
+    if "scratch" not in cfg:
+        raise MasterConfigError(f"{master_config} is missing required key: scratch")
 
     root = Path(str(cfg["root"])).expanduser()
-    values = {"root": root}
+    scratch = Path(str(cfg["scratch"])).expanduser()
+    values = {"root": root, "scratch": scratch}
     for key, default in STAGE_DEFAULTS.items():
         values[key] = resolve_from_root(root, cfg.get(key), default)
     return values

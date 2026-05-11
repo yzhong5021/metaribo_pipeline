@@ -150,11 +150,8 @@ function run_annotation_for_sample() {
 }
 
 function main() {
-  local script_conda_env
   local config_shell
 
-  script_conda_env="${METARIBO_ANNOT_CONDA_ENV:-metaribo_pipeline}"
-  metaribo_reexec_in_conda "${script_conda_env}" "$@"
   metaribo_parse_master_config "${SCRIPT_ROOT}" "$@"
   load_master_values
 

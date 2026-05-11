@@ -26,11 +26,8 @@ function load_master_values() {
 }
 
 function main() {
-  local script_conda_env
   local config_shell
 
-  script_conda_env="${METARIBO_METAGENOME_PREPROCESS_CONDA_ENV:-metaribo_pipeline}"
-  metaribo_reexec_in_conda "${script_conda_env}" "$@"
   metaribo_parse_master_config "${SCRIPT_ROOT}" "$@"
   load_master_values
 
