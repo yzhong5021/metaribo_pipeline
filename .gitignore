@@ -4,7 +4,6 @@ output_mock/
 .nextflow/
 __pycache__/
 file_manifest*
-implementation_flow.md
 
 config/master.yaml
 config/master_mock_meta.yaml
@@ -20,4 +19,3 @@ config/samples_mock.csv
 config/samples_ribo.csv
 config/samples_ribo_0306.csv
 config/samples copy.csv
-

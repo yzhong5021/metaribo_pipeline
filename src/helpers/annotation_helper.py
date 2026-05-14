@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Command-line helper for metagenome annotation workflow stages."""
 
 from __future__ import annotations
@@ -10,8 +9,11 @@ import sys
 from pathlib import Path
 
 from utils import (
+    ANNOTATION_SCRATCH,
+    ANNOTATION_WORK,
     CONTIG_ANNOTATION_PARAMS,
     FILE_MANIFEST,
+    METAGENOME_RESULTS,
     ROOT,
     WorkflowError,
     ensure_dir,
@@ -22,9 +24,6 @@ from utils import (
     read_samplesheet,
     require_path,
     resolve_command,
-    resolve_repo_path,
-    resolve_scratch_path,
-    resolve_work_path,
     save_manifest,
     shell_assignments,
     write_contig_to_genus,
@@ -33,30 +32,30 @@ from utils import (
 
 
 GENUS_RE = re.compile(r"([^\t;]+?)\s+\(genus\):\s*([0-9]+(?:\.[0-9]+)?)")
-ANNOTATION_COMMANDS = {
-    "cat_pack": "CAT_pack",
-    "bakta": "bakta",
-    "bedtools": "bedtools",
-    "exec_annotation": "exec_annotation",
-}
-
-
-def annotation_local_outdir(cfg: dict) -> Path:
-    return resolve_repo_path(cfg.get("local_outdir", ROOT / "output" / "metagenome"))
-
-
-def command_name(config: dict, key: str) -> str:
-    commands = config.get("commands", {})
-    return str(commands.get(key, ANNOTATION_COMMANDS[key]))
 
 
 def check_paths(manifest_path: Path, samplesheet: Path, annotation_config: Path, version_config: Path | None = None) -> None:
     cfg = load_yaml(annotation_config)
     samples = read_samplesheet(samplesheet, check_files=False)
-    require_path(cfg["cat_db"], "CAT database folder", "dir")
-    require_path(cfg["cat_tax"], "CAT taxonomy folder", "dir")
-    for command_key in ANNOTATION_COMMANDS:
-        resolve_command(command_name(cfg, command_key))
+    cat_db_value = str(cfg.get("cat_db") or "").strip()  # TEMP: BYPASS CAT
+    cat_tax_value = str(cfg.get("cat_tax") or "").strip()  # TEMP: BYPASS CAT
+    cat_db = Path(cat_db_value).expanduser()  # TEMP: BYPASS CAT
+    cat_tax = Path(cat_tax_value).expanduser()  # TEMP: BYPASS CAT
+    run_cat = all((  # TEMP: BYPASS CAT
+        cat_db_value,  # TEMP: BYPASS CAT
+        cat_tax_value,  # TEMP: BYPASS CAT
+        cat_db.is_dir(),  # TEMP: BYPASS CAT
+        cat_tax.is_dir(),  # TEMP: BYPASS CAT
+    ))  # TEMP: BYPASS CAT
+    if run_cat:  # TEMP: BYPASS CAT
+        resolve_command("CAT_pack")  # TEMP: BYPASS CAT
+    else:  # TEMP: BYPASS CAT
+        print(  # TEMP: BYPASS CAT
+            "WARNING: CAT database/taxonomy missing; skipping CAT classification",  # TEMP: BYPASS CAT
+            file=sys.stderr,  # TEMP: BYPASS CAT
+        )  # TEMP: BYPASS CAT
+    for command in ("bakta", "bedtools", "exec_annotation"):  # TEMP: BYPASS CAT
+        resolve_command(command)
     require_path(cfg["bakta_db"], "Bakta database", "dir")
     require_path(cfg["kofam_profiles"], "Kofam profiles", "dir")
     require_path(cfg["kofam_list"], "Kofam ko_list", "file")
@@ -73,35 +72,45 @@ def check_paths(manifest_path: Path, samplesheet: Path, annotation_config: Path,
 
 def config_shell(annotation_config: Path, version_config: Path | None = None) -> str:
     cfg = load_yaml(annotation_config)
-    outdir = resolve_scratch_path(cfg["outdir"])
-    workdir = resolve_work_path("metagenome_annotation")
-    local_outdir = annotation_local_outdir(cfg)
+    cat_db_value = str(cfg.get("cat_db") or "").strip()  # TEMP: BYPASS CAT
+    cat_tax_value = str(cfg.get("cat_tax") or "").strip()  # TEMP: BYPASS CAT
+    cat_db = Path(cat_db_value).expanduser()  # TEMP: BYPASS CAT
+    cat_tax = Path(cat_tax_value).expanduser()  # TEMP: BYPASS CAT
+    run_cat = all((  # TEMP: BYPASS CAT
+        cat_db_value,  # TEMP: BYPASS CAT
+        cat_tax_value,  # TEMP: BYPASS CAT
+        cat_db.is_dir(),  # TEMP: BYPASS CAT
+        cat_tax.is_dir(),  # TEMP: BYPASS CAT
+    ))  # TEMP: BYPASS CAT
     values = {
-        "CAT_PATH": resolve_command(command_name(cfg, "cat_pack")),
+        "RUN_CAT": int(run_cat),  # TEMP: BYPASS CAT
+        "CAT_PATH": (  # TEMP: BYPASS CAT
+            resolve_command("CAT_pack") if run_cat else ""  # TEMP: BYPASS CAT
+        ),  # TEMP: BYPASS CAT
         "CAT_PARAMS": cfg.get("cat_params", ""),
         "CAT_DB": cfg.get("cat_db", ""),
         "CAT_TAX": cfg.get("cat_tax", ""),
-        "BAKTA": resolve_command(command_name(cfg, "bakta")),
+        "BAKTA": resolve_command("bakta"),
         "BAKTA_DB": cfg["bakta_db"],
         "BAKTA_PARAMS": cfg.get("bakta_params", ""),
-        "BEDTOOLS": resolve_command(command_name(cfg, "bedtools")),
-        "EXEC_ANNOTATION": resolve_command(command_name(cfg, "exec_annotation")),
+        "BEDTOOLS": resolve_command("bedtools"),
+        "EXEC_ANNOTATION": resolve_command("exec_annotation"),
         "KOFAM_PROFILES": cfg["kofam_profiles"],
         "KOFAM_LIST": cfg["kofam_list"],
         "THREADS": cfg["threads"],
-        "ANNOT_OUTDIR": outdir,
-        "CAT_DIR": outdir / "CAT",
-        "BAKTA_DIR": outdir / "bakta",
-        "ANNOT_WORKDIR": workdir,
-        "LOCAL_OUTDIR": local_outdir,
-        "CONTIG_TO_GENUS_DIR": local_outdir / "contig_to_genus",
-        "BAKTA_CDS_GFF_DIR": local_outdir / "bakta_cds_annotations_gff",
-        "BAKTA_NCRNA_BED_DIR": local_outdir / "bakta_ncrna_bed",
-        "BAKTA_CDS_BED_DIR": local_outdir / "bakta_cds_bed",
-        "BAKTA_CDS_FAA_DIR": local_outdir / "bakta_cds_faa",
-        "BAKTA_COVERAGE_DIR": local_outdir / "bakta_gene_mean_coverage",
-        "KOFAM_DIR": local_outdir / "kofam_annotations",
-        "MASTER_SHEET_DIR": local_outdir / "master_sheets",
+        "ANNOT_OUTDIR": ANNOTATION_SCRATCH,
+        "CAT_DIR": ANNOTATION_SCRATCH / "CAT",
+        "BAKTA_DIR": ANNOTATION_SCRATCH / "bakta",
+        "ANNOT_WORKDIR": ANNOTATION_WORK,
+        "LOCAL_OUTDIR": METAGENOME_RESULTS,
+        "CONTIG_TO_GENUS_DIR": METAGENOME_RESULTS / "contig_to_genus",
+        "BAKTA_CDS_GFF_DIR": METAGENOME_RESULTS / "bakta_cds_annotations_gff",
+        "BAKTA_NCRNA_BED_DIR": METAGENOME_RESULTS / "bakta_ncrna_bed",
+        "BAKTA_CDS_BED_DIR": METAGENOME_RESULTS / "bakta_cds_bed",
+        "BAKTA_CDS_FAA_DIR": METAGENOME_RESULTS / "bakta_cds_faa",
+        "BAKTA_COVERAGE_DIR": METAGENOME_RESULTS / "bakta_gene_mean_coverage",
+        "KOFAM_DIR": METAGENOME_RESULTS / "kofam_annotations",
+        "MASTER_SHEET_DIR": METAGENOME_RESULTS / "master_sheets",
     }
     return shell_assignments(values)
 

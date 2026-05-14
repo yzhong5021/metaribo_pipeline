@@ -1,4 +1,4 @@
-samples: config/samples_ribo.csv
+samplesheet: config/samples_ribo.csv # input samples
 cutadapt_args: "-a AAAAAAAAAACAAAAAAAAAA --overlap 4 --trimmed-only -m 31 -M 56 -q 28"
 contains_umi: true
 umitools_extract_args: "--bc-pattern=NNNNNNNNNNNNNNNN"
@@ -6,8 +6,5 @@ bt2_args: "--very-sensitive --end-to-end --score-min L,0,0 -k 2 --no-unal"
 umitools_dedup_args: "--method=directional --read-length --edit-distance-threshold=0"
 remove_ncrna: true
 remove_multimappers: true
-outdir: ribo_preprocess
-local_outdir: output/ribo
-log: logs/ribo_preprocess.log
 seed: 1000
 threads: 16

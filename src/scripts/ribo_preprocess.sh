@@ -1,29 +1,13 @@
 #!/bin/bash
-#
-# Trim, align, filter, and publish Ribo-ITP reads for each ribo sample.
+
+# Trim, align and filter Ribo-ITP reads.
 
 set -euo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=src/scripts/common.sh
+readonly SCRIPT_ROOT
+
 source "${SCRIPT_ROOT}/src/scripts/common.sh"
-
-function load_master_values() {
-  local master_output
-
-  master_output="$(
-    python3 "${SCRIPT_ROOT}/src/helpers/master_config.py" ribo \
-      --master-config "${MASTER_CONFIG}"
-  )"
-  mapfile -t MASTER_VALUES <<< "${master_output}"
-
-  ROOT="${MASTER_VALUES[0]}"
-  MASTER_MANIFEST="${MASTER_VALUES[1]}"
-  MASTER_PREPROCESS_CONFIG="${MASTER_VALUES[2]}"
-  MASTER_METAGENOME_PREPROCESS_CONFIG="${MASTER_VALUES[3]}"
-  MASTER_CONTIG_ANNOTATION_CONFIG="${MASTER_VALUES[4]}"
-  MASTER_LOG="${MASTER_VALUES[5]}"
-}
 
 function count_fastq() {
   python3 "${HELPER}" count-fastq --fastq "$1"
@@ -48,6 +32,9 @@ function run_ribo_sample() {
   local ribo_fq="$3"
   local contigs="$4"
   local ncrna_bed="$5"
+  local -a cutadapt_cmd
+  local -a umi_dedup_cmd
+  local -a umi_extract_cmd
   local sample_dir
   local index_dir
   local index_prefix
@@ -95,14 +82,14 @@ function run_ribo_sample() {
   mkdir -p "${sample_dir}" "${index_dir}"
   echo "${ribo_id} preprocessing against metagenome ${meta_id}"
 
-  CUTADAPT_CMD=(
+  cutadapt_cmd=(
     "${CUTADAPT}"
     "${CUTADAPT_ARG_ARRAY[@]}"
     -j "${THREADS}"
     -o "${trimmed_fq}"
     "${ribo_fq}"
   )
-  UMI_EXTRACT_CMD=(
+  umi_extract_cmd=(
     "${UMI_TOOLS}" extract
     "${UMITOOLS_EXTRACT_ARG_ARRAY[@]}"
     --stdin="${trimmed_fq}"
@@ -115,7 +102,7 @@ function run_ribo_sample() {
       --sample "${ribo_id}" \
       --reference-dir "${REFERENCE_DIR}"
   )"
-  "${CUTADAPT_CMD[@]}" 2>&1 | tee "${cutadapt_log}"
+  "${cutadapt_cmd[@]}" 2>&1 | tee "${cutadapt_log}"
   input_reads="$(count_fastq "${ribo_fq}")"
   trimmed_reads="$(count_fastq "${trimmed_fq}")"
   python3 "${HELPER}" init-stats --stats "${stats}" --sample "${ribo_id}"
@@ -124,7 +111,7 @@ function run_ribo_sample() {
 
   align_input_reads="${trimmed_reads}"
   if [[ "${CONTAINS_UMI}" -eq 1 ]]; then
-    "${UMI_EXTRACT_CMD[@]}"
+    "${umi_extract_cmd[@]}"
     umi_reads="$(count_fastq "${umi_fq}")"
     append_stats "${stats}" "${ribo_id}" "umi_extract" \
       "${trimmed_reads}" "${umi_reads}"
@@ -169,13 +156,13 @@ function run_ribo_sample() {
   fi
 
   if [[ "${CONTAINS_UMI}" -eq 1 ]]; then
-    UMI_DEDUP_CMD=(
+    umi_dedup_cmd=(
       "${UMI_TOOLS}" dedup
       "${UMITOOLS_DEDUP_ARG_ARRAY[@]}"
       --stdin="${alignment_bam}"
       --stdout="${dedup_bam}"
     )
-    "${UMI_DEDUP_CMD[@]}"
+    "${umi_dedup_cmd[@]}"
     "${SAMTOOLS}" index "${dedup_bam}"
     dedup_reads="$(count_bam "${dedup_bam}")"
     append_stats "${stats}" "${ribo_id}" "umi_dedup" \
@@ -193,13 +180,31 @@ function run_ribo_sample() {
 }
 
 function main() {
+  local -a master_values
   local config_shell
+  local contigs
+  local master_output
+  local meta_id
+  local ncrna_bed
+  local ribo_fq
+  local ribo_id
 
   metaribo_parse_master_config "${SCRIPT_ROOT}" "$@"
-  load_master_values
+  master_output="$(
+    python3 "${SCRIPT_ROOT}/src/helpers/master_config.py" ribo \
+      --master-config "${MASTER_CONFIG}"
+  )"
+  mapfile -t master_values <<< "${master_output}"
+
+  ROOT="${master_values[0]}"
+  MASTER_MANIFEST="${master_values[1]}"
+  MASTER_RIBO_PREPROCESS_CONFIG="${master_values[2]}"
+  MASTER_METAGENOME_PREPROCESS_CONFIG="${master_values[3]}"
+  MASTER_CONTIG_ANNOTATION_CONFIG="${master_values[4]}"
+  MASTER_LOG="${master_values[5]}"
 
   HELPER="${ROOT}/src/helpers/ribo_helper.py"
-  RIBO_CONFIG="${RIBO_CONFIG:-${MASTER_PREPROCESS_CONFIG}}"
+  RIBO_CONFIG="${RIBO_CONFIG:-${MASTER_RIBO_PREPROCESS_CONFIG}}"
   MANIFEST="${RIBO_MANIFEST:-${MASTER_MANIFEST}}"
   LOG="${RIBO_LOG:-${MASTER_LOG}}"
 
@@ -208,7 +213,7 @@ function main() {
 
   cd "${ROOT}"
 
-  echo "[$(date -Is)] - Starting ribo preprocessing"
+  echo "[$(date -Is)]: Starting ribo preprocessing"
   python3 "${HELPER}" check-paths \
     --manifest "${MANIFEST}" \
     --ribo-config "${RIBO_CONFIG}"
@@ -237,21 +242,21 @@ function main() {
     python3 "${HELPER}" split-args --args="${UMITOOLS_DEDUP_ARGS}"
   )
 
-  while IFS=$'\t' read -r RIBO_ID META_ID RIBO_FQ CONTIGS NCRNA_BED; do
-    [[ "${RIBO_ID}" == "ribo_id" ]] && continue
+  while IFS=$'\t' read -r ribo_id meta_id ribo_fq contigs ncrna_bed; do
+    [[ "${ribo_id}" == "ribo_id" ]] && continue
     run_ribo_sample \
-      "${RIBO_ID}" \
-      "${META_ID}" \
-      "${RIBO_FQ}" \
-      "${CONTIGS}" \
-      "${NCRNA_BED}"
+      "${ribo_id}" \
+      "${meta_id}" \
+      "${ribo_fq}" \
+      "${contigs}" \
+      "${ncrna_bed}"
   done < <(
     python3 "${HELPER}" list-inputs \
       --manifest "${MANIFEST}" \
       --ribo-config "${RIBO_CONFIG}"
   )
 
-  echo "[$(date -Is)] - Ribo preprocessing complete"
+  echo "[$(date -Is)]: Ribo preprocessing complete"
 }
 
 main "$@"

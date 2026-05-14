@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Resolve master configuration paths for shell entrypoints."""
 
 from __future__ import annotations
@@ -12,12 +11,14 @@ import yaml
 
 FALLBACK_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MASTER_CONFIG = FALLBACK_ROOT / "config" / "master.yaml"
-STAGE_DEFAULTS = {
-    "file_manifest": "file_manifest.json",
-    "preprocess_params": "config/ribo_preprocess.yaml",
-    "metagenome_preprocess_params": "config/metagenome_preprocess.yaml",
-    "contig_annotation_params": "config/contig_annotation.yaml",
-}
+MASTER_PATH_KEYS = (
+    "results_dir",
+    "logs_dir",
+    "file_manifest",
+    "ribo_preprocess_params",
+    "metagenome_preprocess_params",
+    "contig_annotation_params",
+)
 
 
 class MasterConfigError(RuntimeError):
@@ -32,8 +33,8 @@ def load_yaml(path: Path) -> dict:
     return data
 
 
-def resolve_from_root(root: Path, value: object, default: str) -> Path:
-    path = Path(str(value if value is not None else default)).expanduser()
+def resolve_from_root(root: Path, value: object) -> Path:
+    path = Path(str(value)).expanduser()
     return path if path.is_absolute() else root / path
 
 
@@ -49,73 +50,79 @@ def load_master(master_config: Path) -> dict[str, Path]:
         raise MasterConfigError(f"{master_config} is missing required key: root")
     if "scratch" not in cfg:
         raise MasterConfigError(f"{master_config} is missing required key: scratch")
+    missing = [key for key in MASTER_PATH_KEYS if key not in cfg]
+    if missing:
+        raise MasterConfigError(f"{master_config} is missing required keys: {', '.join(missing)}")
 
     root = Path(str(cfg["root"])).expanduser()
     scratch = Path(str(cfg["scratch"])).expanduser()
-    values = {"root": root, "scratch": scratch}
-    for key, default in STAGE_DEFAULTS.items():
-        values[key] = resolve_from_root(root, cfg.get(key), default)
+    results_dir = resolve_from_root(root, cfg["results_dir"])
+    logs_dir = resolve_from_root(root, cfg["logs_dir"])
+    values = {
+        "root": root,
+        "scratch": scratch,
+        "results_dir": results_dir,
+        "logs_dir": logs_dir,
+        "file_manifest": resolve_from_root(root, cfg["file_manifest"]),
+        "ribo_preprocess_params": resolve_from_root(root, cfg["ribo_preprocess_params"]),
+        "metagenome_preprocess_params": resolve_from_root(root, cfg["metagenome_preprocess_params"]),
+        "contig_annotation_params": resolve_from_root(root, cfg["contig_annotation_params"]),
+        "metagenome_scratch": scratch / "metagenome_preprocess",
+        "annotation_scratch": scratch / "metagenome_annotation",
+        "ribo_scratch": scratch / "ribo_preprocess",
+        "metagenome_work": scratch / "work" / "metagenome_preprocess",
+        "annotation_work": scratch / "work" / "metagenome_annotation",
+        "ribo_work": scratch / "work" / "ribo_preprocess",
+        "metagenome_results": results_dir / "metagenome",
+        "ribo_results": results_dir / "ribo",
+        "coverage_results": results_dir / "coverage",
+        "metagenome_log": logs_dir / "metagenome_preprocess.log",
+        "annotation_log": logs_dir / "contig_annotation.log",
+        "ribo_log": logs_dir / "ribo_preprocess.log",
+    }
     return values
 
 
 def metagenome_values(master_config: Path) -> list[Path]:
     master = load_master(master_config)
-    stage_cfg = load_yaml(master["metagenome_preprocess_params"])
-    log_path = resolve_from_root(
-        master["root"],
-        require_key(stage_cfg, "log", master["metagenome_preprocess_params"]),
-        "",
-    )
     return [
         master["root"],
         master["file_manifest"],
-        master["preprocess_params"],
+        master["ribo_preprocess_params"],
         master["metagenome_preprocess_params"],
         master["contig_annotation_params"],
-        log_path,
+        master["metagenome_log"],
     ]
 
 
 def annotation_values(master_config: Path) -> list[Path]:
     master = load_master(master_config)
     metagenome_cfg = load_yaml(master["metagenome_preprocess_params"])
-    annotation_cfg = load_yaml(master["contig_annotation_params"])
+    load_yaml(master["contig_annotation_params"])
     samplesheet = resolve_from_root(
         master["root"],
-        metagenome_cfg.get("samplesheet"),
-        "config/samples.csv",
-    )
-    log_path = resolve_from_root(
-        master["root"],
-        require_key(annotation_cfg, "log", master["contig_annotation_params"]),
-        "",
+        require_key(metagenome_cfg, "samplesheet", master["metagenome_preprocess_params"]),
     )
     return [
         master["root"],
         master["file_manifest"],
-        master["preprocess_params"],
+        master["ribo_preprocess_params"],
         master["metagenome_preprocess_params"],
         master["contig_annotation_params"],
         samplesheet,
-        log_path,
+        master["annotation_log"],
     ]
 
 
 def ribo_values(master_config: Path) -> list[Path]:
     master = load_master(master_config)
-    stage_cfg = load_yaml(master["preprocess_params"])
-    log_path = resolve_from_root(
-        master["root"],
-        require_key(stage_cfg, "log", master["preprocess_params"]),
-        "",
-    )
     return [
         master["root"],
         master["file_manifest"],
-        master["preprocess_params"],
+        master["ribo_preprocess_params"],
         master["metagenome_preprocess_params"],
         master["contig_annotation_params"],
-        log_path,
+        master["ribo_log"],
     ]
 
 

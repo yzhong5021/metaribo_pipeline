@@ -1,8 +1,5 @@
-params_file: config/params.mag.yaml
-nextflow_config: config/nextflow.config
-samplesheet: config/samples.csv
-gtdb_db: /path/to/gtdbtk/database
-outdir: metagenome_preprocess
+params_file: config/params.mag.yaml # nf-core/mag specific parameter file
+nextflow_config: config/nextflow.config # nf-core/mag specific nextflow config file
+samplesheet: config/samples.csv # input samples
+gtdb_db: null
 apptainer_cache: .apptainer_cache
-local_outdir: output/metagenome
-log: logs/metagenome_preprocess.log

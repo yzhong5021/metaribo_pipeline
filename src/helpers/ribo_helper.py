@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Command-line helper for Ribo-ITP preprocessing workflow stages."""
 
 from __future__ import annotations
@@ -13,8 +12,9 @@ from pathlib import Path
 
 from utils import (
     FILE_MANIFEST,
-    PREPROCESS_PARAMS,
-    ROOT,
+    RIBO_PREPROCESS_PARAMS,
+    RIBO_RESULTS,
+    RIBO_SCRATCH,
     WorkflowError,
     copy_bam_index,
     copy_if_needed,
@@ -24,14 +24,12 @@ from utils import (
     load_yaml,
     require_path,
     resolve_repo_path,
-    resolve_scratch_path,
     save_manifest,
     shell_assignments,
 )
 
 
 RIBO_SAMPLE_COLUMNS = ["id", "meta_id", "path"]
-FASTQ_SUFFIXES = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
 
 
 def as_bool(value: object, key: str) -> bool:
@@ -67,8 +65,6 @@ def read_ribo_samples(samplesheet_path: Path, check_files: bool = True) -> list[
             fail(f"Duplicate ribo id in {samplesheet_path}: {sample}")
         seen.add(sample)
         fastq = Path(row["path"]).expanduser()
-        if not str(fastq).endswith(FASTQ_SUFFIXES):
-            fail(f"Ribo sample {sample} path must be FASTQ/FASTQ.GZ: {fastq}")
         if check_files:
             require_path(fastq, f"Ribo sample {sample} FASTQ", "file")
         row["path"] = str(fastq)
@@ -78,7 +74,7 @@ def read_ribo_samples(samplesheet_path: Path, check_files: bool = True) -> list[
 def ribo_config(path: Path) -> dict:
     cfg = load_yaml(path)
     required = [
-        "samples",
+        "samplesheet",
         "cutadapt_args",
         "contains_umi",
         "umitools_extract_args",
@@ -86,9 +82,6 @@ def ribo_config(path: Path) -> dict:
         "umitools_dedup_args",
         "remove_ncrna",
         "remove_multimappers",
-        "outdir",
-        "local_outdir",
-        "log",
         "seed",
         "threads",
     ]
@@ -102,7 +95,7 @@ def ribo_config(path: Path) -> dict:
 
 
 def samplesheet_from_config(cfg: dict) -> Path:
-    return resolve_repo_path(cfg["samples"])
+    return resolve_repo_path(cfg["samplesheet"])
 
 
 RIBO_COMMANDS = {
@@ -145,15 +138,13 @@ def check_paths(manifest_path: Path, config_path: Path, version_config: Path | N
     cfg = ribo_config(config_path)
     samples = read_ribo_samples(samplesheet_from_config(cfg), check_files=True)
     validate_manifest_inputs(manifest_path, samples, cfg["remove_ncrna"], check_paths=True)
-    ensure_dir(resolve_scratch_path(cfg["outdir"]))
-    ensure_dir(resolve_repo_path(cfg["local_outdir"]))
+    ensure_dir(RIBO_SCRATCH)
+    ensure_dir(RIBO_RESULTS)
     print(f"paths are all valid for {len(samples)} ribo preprocessing samples")
 
 
 def config_shell(config_path: Path, version_config: Path | None = None) -> str:
     cfg = ribo_config(config_path)
-    outdir = resolve_scratch_path(cfg["outdir"])
-    local_outdir = resolve_repo_path(cfg["local_outdir"])
     values = {
         "CUTADAPT": command_name(cfg, "cutadapt"),
         "UMI_TOOLS": command_name(cfg, "umi_tools"),
@@ -168,13 +159,13 @@ def config_shell(config_path: Path, version_config: Path | None = None) -> str:
         "CONTAINS_UMI": int(cfg["contains_umi"]),
         "REMOVE_NCRNA": int(cfg["remove_ncrna"]),
         "REMOVE_MULTIMAPPERS": int(cfg["remove_multimappers"]),
-        "RIBO_OUTDIR": outdir,
-        "RIBO_DIR": outdir / "ribo",
-        "BT2_DIR": outdir / "bt2",
-        "REFERENCE_DIR": outdir / "references",
-        "LOCAL_OUTDIR": local_outdir,
-        "LOCAL_ALIGNMENT_DIR": local_outdir / "alignment",
-        "LOCAL_STATS_DIR": local_outdir / "stats",
+        "RIBO_OUTDIR": RIBO_SCRATCH,
+        "RIBO_DIR": RIBO_SCRATCH / "ribo",
+        "BT2_DIR": RIBO_SCRATCH / "bt2",
+        "REFERENCE_DIR": RIBO_SCRATCH / "references",
+        "LOCAL_OUTDIR": RIBO_RESULTS,
+        "LOCAL_ALIGNMENT_DIR": RIBO_RESULTS / "alignment",
+        "LOCAL_STATS_DIR": RIBO_RESULTS / "stats",
         "SEED": cfg["seed"],
         "THREADS": cfg["threads"],
     }
@@ -193,15 +184,10 @@ def list_inputs(manifest_path: Path, config_path: Path) -> None:
         print(f"{row['id']}\t{meta_id}\t{row['path']}\t{metagenome['contigs'][meta_id]}\t{ncrna_bed}")
 
 
-def strip_gzip_suffix(path: Path) -> str:
-    name = path.name
-    return name[:-3] if name.endswith(".gz") else name
-
-
 def reference_path(contigs: Path, ribo_id: str, reference_dir: Path) -> Path:
     contigs = Path(contigs)
     if contigs.name.endswith(".gz"):
-        return reference_dir / ribo_id / strip_gzip_suffix(contigs)
+        return reference_dir / ribo_id / contigs.name[:-3]
     return contigs
 
 
@@ -220,11 +206,8 @@ def prepare_reference(contigs: Path, ribo_id: str, reference_dir: Path) -> Path:
 
 def count_fastq(path: Path) -> int:
     require_path(path, "FASTQ", "file")
-    opener = gzip.open if str(path).endswith(".gz") else open
-    lines = 0
-    with opener(path, "rt") as handle:
-        for lines, _line in enumerate(handle, start=1):
-            pass
+    with gzip.open(path, "rt") as handle:
+        lines = sum(1 for _line in handle)
     if lines % 4 != 0:
         fail(f"FASTQ line count is not divisible by four: {path}")
     return lines // 4
@@ -246,19 +229,14 @@ def append_stats(path: Path, sample: str, stage: str, before: int, after: int) -
         writer.writerow([sample, stage, before, after, removed, f"{proportion:.6f}"])
 
 
-def publish_outputs(alignment_bam: Path, stats: Path, local_outdir: Path) -> tuple[Path, Path]:
-    # Keep the final ribo BAM and stats in the local output tree for analysis.
-    local_outdir = resolve_repo_path(local_outdir)
-    target_bam = copy_if_needed(alignment_bam, local_outdir / "alignment" / alignment_bam.name)
-    copy_bam_index(alignment_bam, target_bam)
-    target_stats = copy_if_needed(stats, local_outdir / "stats" / stats.name)
-    return target_bam, target_stats
-
-
 def update_manifest(manifest_path: Path, sample: str, alignment_bam: Path, stats: Path, local_outdir: Path | None = None) -> None:
     # Add the final ribo alignment and stats file for downstream notebooks.
     if local_outdir is not None:
-        alignment_bam, stats = publish_outputs(alignment_bam, stats, local_outdir)
+        local_outdir = resolve_repo_path(local_outdir)
+        target_bam = copy_if_needed(alignment_bam, local_outdir / "alignment" / alignment_bam.name)
+        copy_bam_index(alignment_bam, target_bam)
+        alignment_bam = target_bam
+        stats = copy_if_needed(stats, local_outdir / "stats" / stats.name)
     manifest = load_manifest(manifest_path)
     ribo = manifest.setdefault("ribo", {})
     ribo.setdefault("alignment", {})
@@ -278,14 +256,14 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("check-paths")
     p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
-    p.add_argument("--ribo-config", type=Path, default=PREPROCESS_PARAMS)
+    p.add_argument("--ribo-config", type=Path, default=RIBO_PREPROCESS_PARAMS)
     p.add_argument("--versions", type=Path, default=None)
     p = sub.add_parser("config-shell")
-    p.add_argument("--ribo-config", type=Path, default=PREPROCESS_PARAMS)
+    p.add_argument("--ribo-config", type=Path, default=RIBO_PREPROCESS_PARAMS)
     p.add_argument("--versions", type=Path, default=None)
     p = sub.add_parser("list-inputs")
     p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
-    p.add_argument("--ribo-config", type=Path, default=PREPROCESS_PARAMS)
+    p.add_argument("--ribo-config", type=Path, default=RIBO_PREPROCESS_PARAMS)
     p = sub.add_parser("reference-path")
     p.add_argument("--contigs", type=Path, required=True)
     p.add_argument("--sample", required=True)

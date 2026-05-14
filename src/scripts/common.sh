@@ -1,12 +1,6 @@
-#!/bin/bash
-#
-# Shared shell helpers for MetaRibo pipeline entrypoints.
+# Common shell functions.
 
-function metaribo_die() {
-  echo "ERROR: $*" >&2
-  exit 2
-}
-
+# Parse --master-config and leave unrelated arguments in PASSTHRU_ARGS.
 function metaribo_parse_master_config() {
   local script_root="$1"
   shift
@@ -18,7 +12,8 @@ function metaribo_parse_master_config() {
     case "$1" in
       --master-config)
         if [[ "$#" -lt 2 ]]; then
-          metaribo_die "--master-config requires a path"
+          echo "ERROR: specify a path for --master-config." >&2
+          exit 2
         fi
         MASTER_CONFIG="$2"
         shift 2

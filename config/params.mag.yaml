@@ -6,7 +6,7 @@ skip_ale: true
 skip_prodigal: true
 skip_prokka: true
 skip_metaeuk: true
-skip_gtdbtk: false
+skip_gtdbtk: true
 binning_map_mode: own
 bowtie2_mode: "--very-sensitive-local"
 save_assembly_mapped_reads: true

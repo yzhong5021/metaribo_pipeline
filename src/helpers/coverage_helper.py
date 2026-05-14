@@ -1,16 +1,15 @@
-"""Coverage and metagene helpers used by the coverage notebook."""
+"""Coverage and metagene functions used by the notebook."""
 
 from __future__ import annotations
 
 from collections import defaultdict
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pysam
 
 
-POINT_METHODS = {
+METHOD_TRANSLATOR = {
     "5prime": "5p",
     "5p": "5p",
     "3prime": "3p",
@@ -20,20 +19,19 @@ POINT_METHODS = {
 }
 
 
-def _cds_id_and_rows(master_df: pd.DataFrame) -> tuple[pd.Index, pd.DataFrame]:
+def _extract_cds_ids(master_df: pd.DataFrame) -> tuple[pd.Index, pd.DataFrame]:
     df = master_df.copy()
     if "CDS_id" in df.columns:
         cds_ids = df["CDS_id"].astype(str)
         df = df.set_index(cds_ids, drop=False)
     else:
         cds_ids = df.index.astype(str)
-        df = df.copy()
         df["CDS_id"] = cds_ids
     return pd.Index(cds_ids, name="CDS_id"), df
 
 
 def _master_records(master_df: pd.DataFrame) -> dict[str, list[dict]]:
-    _cds_ids, df = _cds_id_and_rows(master_df)
+    _cds_ids, df = _extract_cds_ids(master_df)
     required = {"CDS_id", "contig_id", "start", "end", "strand"}
     missing = required - set(df.columns)
     if missing:
@@ -82,7 +80,7 @@ def _same_strand(aln: pysam.AlignedSegment, cds_strand: str) -> bool:
 
 
 def _read_point(aln: pysam.AlignedSegment, method: str) -> int:
-    method = POINT_METHODS[method]
+    method = METHOD_TRANSLATOR[method]
     if method == "center":
         return (aln.reference_start + aln.reference_end - 1) // 2
     if method == "5p":
@@ -97,10 +95,10 @@ def _overlap_len(aln: pysam.AlignedSegment, record: dict) -> int:
 def bin_ribo_counts(bam_path, master_df, method="overlap"):
     # Bin each usable ribo read to one CDS; overlap is the default assignment method.
     method = method.lower()
-    if method not in {"overlap", *POINT_METHODS}:
+    if method not in {"overlap", *METHOD_TRANSLATOR}:
         raise ValueError("method must be one of: overlap, median, center, 5prime, 5p, 3prime, 3p")
 
-    cds_ids, _df = _cds_id_and_rows(master_df)
+    cds_ids, _df = _extract_cds_ids(master_df)
     counts = pd.Series(0, index=cds_ids, name="binned_counts", dtype="int64")
     records_by_contig = _master_records(master_df)
 
@@ -140,7 +138,7 @@ def bin_ribo_counts(bam_path, master_df, method="overlap"):
 
 def build_metagene(bam_path, master_df, anchor, window, length=None):
     # Build start and stop metagene profiles around Bakta CDS boundaries.
-    anchor = POINT_METHODS.get(str(anchor).lower())
+    anchor = METHOD_TRANSLATOR.get(str(anchor).lower())
     if anchor is None:
         raise ValueError("anchor must be one of: median, center, 5prime, 5p, 3prime, 3p")
     window = int(window)

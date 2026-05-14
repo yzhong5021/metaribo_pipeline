@@ -1,4 +1,4 @@
-"""Functional analysis helpers used by the analysis notebook."""
+"""Functional analysis helpers used by the notebook."""
 
 from __future__ import annotations
 
@@ -220,7 +220,8 @@ def stacked_bp(ax, plot_data, title, xlabel, fontsize):
 
 def plot_functional(df, mapping_path, top_n, top_s, title, fontsize):
     _agnostic_final, taxa_final = process_footprints(df, mapping_path)
-    if "Unknown" in taxa_final.columns:
+    taxa_columns = [col for col in taxa_final.columns if col != "kofam"]
+    if "Unknown" in taxa_final.columns and len(taxa_columns) > 1:
         taxa_final = taxa_final.drop(columns=["Unknown"])
     if taxa_final.empty:
         fig, ax = plt.subplots(figsize=(12, 10))

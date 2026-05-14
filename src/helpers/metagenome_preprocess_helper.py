@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Command-line helper for metagenome preprocessing workflow stages."""
 
 from __future__ import annotations
@@ -12,7 +11,10 @@ from pathlib import Path
 
 from utils import (
     FILE_MANIFEST,
+    METAGENOME_RESULTS,
     METAGENOME_PREPROCESS_PARAMS,
+    METAGENOME_SCRATCH,
+    METAGENOME_WORK,
     ROOT,
     WorkflowError,
     copy_bam_index,
@@ -26,7 +28,6 @@ from utils import (
     resolve_command,
     resolve_repo_path,
     resolve_scratch_path,
-    resolve_work_path,
     save_manifest,
     shell_assignments,
     write_contig_to_genus,
@@ -36,43 +37,34 @@ from utils import (
 NEXTFLOW_COMMAND = "nextflow"
 
 
-def needs_gtdb_db(cfg: dict) -> bool:
-    params = load_yaml(resolve_repo_path(cfg["params_file"]))
-    skip_gtdbtk = params.get("skip_gtdbtk", False)
-    return str(skip_gtdbtk).strip().lower() not in {"true", "1", "yes"}
-
-
 def gtdb_db_path(cfg: dict) -> str:
-    gtdb_db = str(cfg.get("gtdb_db", "")).strip()
-    if needs_gtdb_db(cfg) and not gtdb_db:
-        fail(f"{cfg['params_file']} runs GTDB-Tk, so metagenome preprocess config must set gtdb_db")
-    return gtdb_db
+    raw_gtdb_db = cfg.get("gtdb_db")
+    return "" if raw_gtdb_db is None else str(raw_gtdb_db).strip()
 
 
-def check_paths(metagenome_preprocess_config: Path, version_config: Path | None = None, check_fastq_integrity: bool = False) -> None:
+def check_paths(metagenome_preprocess_config: Path, version_config: Path | None = None) -> None:
     cfg = load_yaml(metagenome_preprocess_config)
     gtdb_db = gtdb_db_path(cfg)
     if gtdb_db:
         require_path(gtdb_db, "GTDB-Tk database", "dir")
     ensure_dir(resolve_scratch_path(cfg["apptainer_cache"]))
-    ensure_dir(resolve_work_path("metagenome_preprocess"))
-    rows = read_samplesheet(resolve_repo_path(cfg["samplesheet"]), check_files=True, check_integrity=check_fastq_integrity)
+    ensure_dir(METAGENOME_WORK)
+    rows = read_samplesheet(resolve_repo_path(cfg["samplesheet"]), check_files=True)
     print(f"paths are all valid for {len(rows)} nf-core/mag samples")
 
 
 def command_shell(metagenome_preprocess_config: Path) -> str:
     cfg = load_yaml(metagenome_preprocess_config)
-    local_outdir = resolve_repo_path(cfg.get("local_outdir", ROOT / "output" / "metagenome"))
     values = {
         "NEXTFLOW": resolve_command(NEXTFLOW_COMMAND),
         "PARAMS_FILE": resolve_repo_path(cfg["params_file"]),
         "NEXTFLOW_CONFIG": resolve_repo_path(cfg["nextflow_config"]),
         "SAMPLESHEET": resolve_repo_path(cfg["samplesheet"]),
-        "OUTDIR": resolve_scratch_path(cfg["outdir"]),
-        "LOCAL_OUTDIR": local_outdir,
+        "OUTDIR": METAGENOME_SCRATCH,
+        "LOCAL_OUTDIR": METAGENOME_RESULTS,
         "GTDB_DB": gtdb_db_path(cfg),
         "APPTAINER_CACHEDIR": resolve_scratch_path(cfg["apptainer_cache"]),
-        "WORK_DIR": resolve_work_path("metagenome_preprocess"),
+        "WORK_DIR": METAGENOME_WORK,
     }
     return shell_assignments(values)
 
@@ -194,33 +186,26 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("validate-samples")
     p.add_argument("--samplesheet", type=Path, default=ROOT / "config" / "samples.csv")
-    p.add_argument("--check-fastq-integrity", action="store_true")
     p = sub.add_parser("check-paths")
     p.add_argument("--metagenome-preprocess-config", type=Path, default=METAGENOME_PREPROCESS_PARAMS)
     p.add_argument("--versions", type=Path, default=None)
-    p.add_argument("--check-fastq-integrity", action="store_true")
     p = sub.add_parser("command-shell")
     p.add_argument("--metagenome-preprocess-config", type=Path, default=METAGENOME_PREPROCESS_PARAMS)
     p = sub.add_parser("collect-outputs")
     p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
-    p.add_argument("--samplesheet", type=Path, default=ROOT / "config" / "samples.csv")
-    p.add_argument("--outdir", type=Path, default=None)
-    p.add_argument("--output-dir", type=Path, default=None)
+    p.add_argument("--samplesheet", type=Path, required=True)
     p.add_argument("--metagenome-preprocess-config", type=Path, default=METAGENOME_PREPROCESS_PARAMS)
     args = parser.parse_args()
     try:
         if args.command == "validate-samples":
-            rows = read_samplesheet(args.samplesheet, check_files=True, check_integrity=args.check_fastq_integrity)
+            rows = read_samplesheet(args.samplesheet, check_files=True)
             print(f"Validated {args.samplesheet} with {len(rows)} samples")
         elif args.command == "check-paths":
-            check_paths(args.metagenome_preprocess_config, args.versions, check_fastq_integrity=args.check_fastq_integrity)
+            check_paths(args.metagenome_preprocess_config, args.versions)
         elif args.command == "command-shell":
             print(command_shell(args.metagenome_preprocess_config))
         elif args.command == "collect-outputs":
-            cfg = load_yaml(args.metagenome_preprocess_config)
-            outdir = args.outdir if args.outdir is not None else resolve_scratch_path(cfg["outdir"])
-            output_dir = args.output_dir if args.output_dir is not None else resolve_repo_path(cfg.get("local_outdir", ROOT / "output" / "metagenome"))
-            collect_outputs(args.manifest, args.samplesheet, outdir, output_dir)
+            collect_outputs(args.manifest, args.samplesheet, METAGENOME_SCRATCH, METAGENOME_RESULTS)
     except WorkflowError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

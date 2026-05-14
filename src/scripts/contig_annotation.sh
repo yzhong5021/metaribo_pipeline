@@ -1,35 +1,25 @@
 #!/bin/bash
-#
-# Annotate metagenome contigs and update the workflow manifest.
+
+# Annotate metagenome contigs.
 
 set -euo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=src/scripts/common.sh
+readonly SCRIPT_ROOT
 source "${SCRIPT_ROOT}/src/scripts/common.sh"
 
-function load_master_values() {
-  local master_output
-
-  master_output="$(
-    python3 "${SCRIPT_ROOT}/src/helpers/master_config.py" annotation \
-      --master-config "${MASTER_CONFIG}"
-  )"
-  mapfile -t MASTER_VALUES <<< "${master_output}"
-
-  ROOT="${MASTER_VALUES[0]}"
-  MASTER_MANIFEST="${MASTER_VALUES[1]}"
-  MASTER_PREPROCESS_CONFIG="${MASTER_VALUES[2]}"
-  MASTER_METAGENOME_PREPROCESS_CONFIG="${MASTER_VALUES[3]}"
-  MASTER_CONTIG_ANNOTATION_CONFIG="${MASTER_VALUES[4]}"
-  MASTER_SAMPLESHEET="${MASTER_VALUES[5]}"
-  MASTER_LOG="${MASTER_VALUES[6]}"
-}
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  export PATH="${CONDA_PREFIX}/bin:${PATH}"
+fi
 
 function run_annotation_for_sample() {
   local sample_id="$1"
   local contigs="$2"
-  local bam="$4"
+  local bam="$3"
+  local -a add_names_cmd
+  local -a bakta_cmd
+  local -a cat_cmd
+  local -a master_sheet_cmd
   local contig_to_genus
   local cat_prefix
   local cat_contig_calls
@@ -57,7 +47,7 @@ function run_annotation_for_sample() {
   master_sheet_tsv="${MASTER_SHEET_DIR}/${sample_id}_master_sheet.tsv"
   mkdir -p "${kofam_tmp}"
 
-  BAKTA_CMD=(
+  bakta_cmd=(
     "${BAKTA}" --db "${BAKTA_DB}"
     --output "${bakta_run_dir}"
     --prefix "${sample_id}"
@@ -68,7 +58,7 @@ function run_annotation_for_sample() {
     "${BAKTA_PARAM_ARGS[@]}"
     "${contigs}"
   )
-  "${BAKTA_CMD[@]}"
+  "${bakta_cmd[@]}"
 
   eval "$(
     python3 "${HELPER}" process-bakta \
@@ -79,7 +69,7 @@ function run_annotation_for_sample() {
       --shell
   )"
   echo "${sample_id} Number of CDSs annotated by Bakta: ${NUM_CDS}"
-  echo "${sample_id} Number of ncRNAs annotated by Bakta: ${NUM_NCRNA}"
+  echo "${sample_id} Number of ncRNA regions annotated by Bakta: ${NUM_NCRNA}"
 
   python3 "${HELPER}" sort-bed-for-coverage \
     --fasta "${contigs}" \
@@ -102,44 +92,50 @@ function run_annotation_for_sample() {
     -f detail-tsv \
     "${CDS_FAA}"
 
-  MASTER_SHEET_CMD=(
+  master_sheet_cmd=(
     python3 "${HELPER}" make-master-sheet
     --cds-gff "${CDS_GFF}"
     --coverage "${coverage_tsv}"
     --kofam "${kofam_tsv}"
     --output "${master_sheet_tsv}"
   )
-  CAT_CMD=(
-    "${CAT_PATH}" contigs
-    "${CAT_PARAM_ARGS[@]}"
-    -c "${contigs}"
-    -d "${CAT_DB}"
-    -t "${CAT_TAX}"
-    -o "${cat_prefix}"
-    -n "${THREADS}"
-    --force
-  )
-  ADD_NAMES_CMD=(
-    "${CAT_PATH}" add_names
-    -i "${cat_contig_calls}"
-    -o "${cat_translated}"
-    -t "${CAT_TAX}"
-    --force
-  )
-  "${CAT_CMD[@]}"
-  "${ADD_NAMES_CMD[@]}"
+  if [[ "${RUN_CAT}" -eq 1 ]]; then  # TEMP: BYPASS CAT
+    cat_cmd=(
+      "${CAT_PATH}" contigs
+      "${CAT_PARAM_ARGS[@]}"
+      -c "${contigs}"
+      -d "${CAT_DB}"
+      -t "${CAT_TAX}"
+      -o "${cat_prefix}"
+      -n "${THREADS}"
+      --force
+    )
+    add_names_cmd=(
+      "${CAT_PATH}" add_names
+      -i "${cat_contig_calls}"
+      -o "${cat_translated}"
+      -t "${CAT_TAX}"
+      --force
+    )
+    "${cat_cmd[@]}"
+    "${add_names_cmd[@]}"
 
-  cat_updated="$(
-    python3 "${HELPER}" merge-cat \
-      --contig-to-genus "${contig_to_genus}" \
-      --cat-translated "${cat_translated}"
-  )"
-  cat_total=$(($(wc -l < "${contig_to_genus}") - 1))
-  echo "${sample_id} Number of contigs assigned a genus: ${cat_total}"
-  echo "${sample_id} Number of contigs assigned with CAT (excluding ones propagated from bins): ${cat_updated}"
+    cat_updated="$(
+      python3 "${HELPER}" merge-cat \
+        --contig-to-genus "${contig_to_genus}" \
+        --cat-translated "${cat_translated}"
+    )"
+    cat_total=$(($(wc -l < "${contig_to_genus}") - 1))
+    echo "${sample_id} Number of contigs assigned a genus: ${cat_total}"
+    echo "${sample_id} Number of contigs assigned with CAT (excluding ones propagated from bins): ${cat_updated}"
+  else
+    echo "${sample_id} skipping CAT classification because cat_db/cat_tax is missing"  # TEMP: BYPASS CAT
+  fi
 
-  MASTER_SHEET_CMD+=(--contig-to-genus "${contig_to_genus}")
-  "${MASTER_SHEET_CMD[@]}"
+  if [[ -s "${contig_to_genus}" ]]; then
+    master_sheet_cmd+=(--contig-to-genus "${contig_to_genus}")
+  fi
+  "${master_sheet_cmd[@]}"
   python3 "${HELPER}" update-manifest \
     --manifest "${MANIFEST}" \
     --sample "${sample_id}" \
@@ -150,10 +146,28 @@ function run_annotation_for_sample() {
 }
 
 function main() {
+  local -a master_values
   local config_shell
+  local contigs
+  local master_output
+  local sample_id
+  local unused_contig_to_genus
+  local bam
 
   metaribo_parse_master_config "${SCRIPT_ROOT}" "$@"
-  load_master_values
+  master_output="$(
+    python3 "${SCRIPT_ROOT}/src/helpers/master_config.py" annotation \
+      --master-config "${MASTER_CONFIG}"
+  )"
+  mapfile -t master_values <<< "${master_output}"
+
+  ROOT="${master_values[0]}"
+  MASTER_MANIFEST="${master_values[1]}"
+  MASTER_RIBO_PREPROCESS_CONFIG="${master_values[2]}"
+  MASTER_METAGENOME_PREPROCESS_CONFIG="${master_values[3]}"
+  MASTER_CONTIG_ANNOTATION_CONFIG="${master_values[4]}"
+  MASTER_SAMPLESHEET="${master_values[5]}"
+  MASTER_LOG="${master_values[6]}"
 
   HELPER="${ROOT}/src/helpers/annotation_helper.py"
   ANNOTATION_CONFIG="${ANNOTATION_CONFIG:-${MASTER_CONTIG_ANNOTATION_CONFIG}}"
@@ -166,7 +180,7 @@ function main() {
 
   cd "${ROOT}"
 
-  echo "[$(date -Is)] - Starting metagenome annotation"
+  echo "[$(date -Is)]: Starting metagenome annotation"
   config_shell="$(
     python3 "${HELPER}" config-shell --annotation-config "${ANNOTATION_CONFIG}"
   )"
@@ -191,9 +205,9 @@ function main() {
   read -r -a CAT_PARAM_ARGS <<< "${CAT_PARAMS}"
   read -r -a BAKTA_PARAM_ARGS <<< "${BAKTA_PARAMS}"
 
-  while IFS=$'\t' read -r SAMPLE_ID CONTIGS CONTIG_TO_GENUS BAM; do
-    [[ "${SAMPLE_ID}" == "sample_id" ]] && continue
-    run_annotation_for_sample "${SAMPLE_ID}" "${CONTIGS}" "${CONTIG_TO_GENUS}" "${BAM}"
+  while IFS=$'\t' read -r sample_id contigs unused_contig_to_genus bam; do
+    [[ "${sample_id}" == "sample_id" ]] && continue
+    run_annotation_for_sample "${sample_id}" "${contigs}" "${bam}"
   done < <(
     python3 "${HELPER}" list-inputs \
       --manifest "${MANIFEST}" \
@@ -201,7 +215,7 @@ function main() {
       --annotation-config "${ANNOTATION_CONFIG}"
   )
 
-  echo "[$(date -Is)] - Metagenome annotation complete"
+  echo "[$(date -Is)]: Metagenome annotation complete"
 }
 
 main "$@"

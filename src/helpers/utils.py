@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Shared helpers for MetaRibo pipeline command-line modules."""
 
 from __future__ import annotations
@@ -8,7 +7,6 @@ import json
 import os
 import shlex
 import shutil
-import subprocess
 from pathlib import Path
 
 from master_config import DEFAULT_MASTER_CONFIG, MasterConfigError, load_master
@@ -34,8 +32,6 @@ SAMPLE_COLUMNS = [
 class WorkflowError(RuntimeError):
     """Raised for expected workflow validation failures."""
 
-    pass
-
 
 def fail(message: str) -> None:
     raise WorkflowError(message)
@@ -58,27 +54,24 @@ def master_config(path: Path = MASTER_CONFIG) -> dict:
         fail(str(exc))
 
 
-def root_path(*parts: str | Path) -> Path:
-    cfg = master_config()
-    path = cfg["root"]
-    for part in parts:
-        path = path / part
-    return path
-
-
-def scratch_path(value: str | Path) -> Path:
-    path = Path(value).expanduser()
-    if path.is_absolute():
-        return path
-    return master_config()["scratch"] / path
-
-
-ROOT = root_path()
-SCRATCH_ROOT = master_config()["scratch"]
-FILE_MANIFEST = master_config()["file_manifest"]
-PREPROCESS_PARAMS = master_config()["preprocess_params"]
-METAGENOME_PREPROCESS_PARAMS = master_config()["metagenome_preprocess_params"]
-CONTIG_ANNOTATION_PARAMS = master_config()["contig_annotation_params"]
+MASTER_VALUES = master_config()
+ROOT = MASTER_VALUES["root"]
+SCRATCH_ROOT = MASTER_VALUES["scratch"]
+RESULTS_DIR = MASTER_VALUES["results_dir"]
+LOGS_DIR = MASTER_VALUES["logs_dir"]
+FILE_MANIFEST = MASTER_VALUES["file_manifest"]
+RIBO_PREPROCESS_PARAMS = MASTER_VALUES["ribo_preprocess_params"]
+METAGENOME_PREPROCESS_PARAMS = MASTER_VALUES["metagenome_preprocess_params"]
+CONTIG_ANNOTATION_PARAMS = MASTER_VALUES["contig_annotation_params"]
+METAGENOME_SCRATCH = MASTER_VALUES["metagenome_scratch"]
+ANNOTATION_SCRATCH = MASTER_VALUES["annotation_scratch"]
+RIBO_SCRATCH = MASTER_VALUES["ribo_scratch"]
+METAGENOME_WORK = MASTER_VALUES["metagenome_work"]
+ANNOTATION_WORK = MASTER_VALUES["annotation_work"]
+RIBO_WORK = MASTER_VALUES["ribo_work"]
+METAGENOME_RESULTS = MASTER_VALUES["metagenome_results"]
+RIBO_RESULTS = MASTER_VALUES["ribo_results"]
+COVERAGE_RESULTS = MASTER_VALUES["coverage_results"]
 
 
 def resolve_repo_path(value: str | Path) -> Path:
@@ -87,15 +80,10 @@ def resolve_repo_path(value: str | Path) -> Path:
 
 
 def resolve_scratch_path(value: str | Path) -> Path:
-    return scratch_path(value)
-
-
-def resolve_work_path(value: str | Path | None = None) -> Path:
-    work_root = master_config()["scratch"] / "work"
-    if value in (None, ""):
-        return work_root
     path = Path(value).expanduser()
-    return path if path.is_absolute() else work_root / path
+    if path.is_absolute():
+        return path
+    return SCRATCH_ROOT / path
 
 
 def resolve_command(command: str) -> str:
@@ -176,7 +164,7 @@ def require_path(path: str | Path, label: str, kind: str | None = None) -> Path:
     return p
 
 
-def read_samplesheet(samplesheet_path: Path, check_files: bool = True, check_integrity: bool = False) -> list[dict]:
+def read_samplesheet(samplesheet_path: Path, check_files: bool = True) -> list[dict]:
     rows: list[dict] = []
     require_path(samplesheet_path, "samples.csv", "file")
     with samplesheet_path.open(newline="") as handle:
@@ -201,26 +189,12 @@ def read_samplesheet(samplesheet_path: Path, check_files: bool = True, check_int
         if row["group"] != sample:
             fail(f"Sample {sample} must use a separate group matching the sample id")
     if check_files:
-        validate_sample_files(rows, check_integrity=check_integrity)
+        for row in rows:
+            for col in ("short_reads_1", "short_reads_2"):
+                path = Path(row[col])
+                if not path.exists():
+                    fail(f"Sample {row['sample']} {col} does not exist: {path}")
     return rows
-
-
-def validate_sample_files(rows: list[dict], check_integrity: bool = False) -> None:
-    for row in rows:
-        for col in ("short_reads_1", "short_reads_2"):
-            path = Path(row[col])
-            if not path.exists():
-                fail(f"Sample {row['sample']} {col} does not exist: {path}")
-            if path.suffix != ".gz" or not str(path).endswith((".fastq.gz", ".fq.gz")):
-                fail(f"Sample {row['sample']} {col} must be compressed FASTQ: {path}")
-            if check_integrity:
-                checker = shutil.which("bgzip") or shutil.which("gzip")
-                if checker is None:
-                    fail("Cannot check FASTQ integrity because neither bgzip nor gzip is on PATH")
-                result = subprocess.run([checker, "-t", str(path)], text=True, capture_output=True, check=False)
-                if result.returncode != 0:
-                    detail = (result.stderr or result.stdout).strip()
-                    fail(f"Sample {row['sample']} {col} failed gzip/BGZF integrity check: {path}\n{detail}")
 
 
 def read_contig_to_genus(path: Path) -> dict[str, str]:

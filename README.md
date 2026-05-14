@@ -20,18 +20,25 @@ Use the templates provided in `config` as a guide.
 
 - `root`: the path to this repo
 - `scratch`: store large outputs here. Work dirs are always under `scratch/work`.
+- `results_dir`: local results directory; can be relative to `root`, or the absolute path
+- `logs_dir`: log directory; can be relative to `root`, or the absolute path
 - `file_manifest`: the manifest the scripts update as each stage finishes
-- paths to the stage-specific configs.
+- `ribo_preprocess_params`, `metagenome_preprocess_params`, `contig_annotation_params`: stage-specific yaml paths; can be relative to `root`, or the absolute path
 
-- `config/samples.csv`: metagenome sample sheet. For help, visit the [nf-core/mag](https://nf-co.re/mag/5.4.2) documentation.
+### Inputting Samples
+- samples should be in gzipped FASTQ format.
+- `config/samples.csv`: metagenome sample sheet. For help, visit the [nf-core/mag](https://nf-co.re/mag/5.4.2) documentation. This path should be specified in `config/metagenome_preprocess.yaml`, under `samplesheet`.
     - Samples should contain `sample,group,short_reads_1,short_reads_2,long_reads,short_reads_platform,long_reads_platform`
-- `config/samples_ribo.csv`: Ribo-ITP sample sheet.
+- `config/samples_ribo.csv`: Ribo-ITP sample sheet. This path should be specified in `config/ribo_preprocess.yaml`, under `samplesheet`.
     - Samples should contain `id,meta_id,path`. `meta_id` should match the respective metagenome ID specified above in (`sample`).
 - `config/metagenome_preprocess.yaml`: metagenome preprocessing-specific parameters.
 - `config/params.mag.yaml`: nf-core/mag parameters. visit [nf-core/mag](https://nf-co.re/mag/5.4.2) documentation for additional help.
 - `config/nextflow.config`: nf-core/mag config. visit [nf-core/mag](https://nf-co.re/mag/5.4.2) documentation for additional help.
 - `config/contig_annotation.yaml`: contig annotation specific parameters.
 - `config/ribo_preprocess.yaml`: Ribo-ITP preprocessing/alignment parameters.
+
+The intermediate files, outputs, and logs for specific stages are located in: 
+- `{scratch}/{metagenome_preprocess,metagenome_annotation,ribo_preprocess}`; - `scratch/work/{metagenome_preprocess,metagenome_annotation,ribo_preprocess}`,  - `results_dir/{metagenome,ribo,coverage}`, and - `logs_dir/{metagenome_preprocess.log,contig_annotation.log,ribo_preprocess.log}`.
 
 `file_manifest.json` is used to save and pass file paths between stages. Do not edit unless you are supplying precomputed files.
 
@@ -127,8 +134,8 @@ Then run `notebooks/functional_analysis.ipynb`: read normalization, taxonomy/fun
 
 ## Outputs
 
-Logs are written under `logs/`.
+Logs are written under `logs_dir`.
 
-Local outputs are written under `output/` unless a stage config points elsewhere. Large outputs are written under `scratch`; work directories use `scratch/work`.
+Local outputs are written under `results_dir`. Large outputs are written under `scratch`; work directories use `scratch/work`.
 
 Essential intermediate files are stored in `file_manifest.json`.

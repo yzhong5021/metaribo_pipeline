@@ -1,0 +1,8 @@
+root: /home/yochen/metaribo_pipeline # root of this project (i.e. the directory where src/ resides)
+scratch: /scratch/users/yochen/metariboitp/mock # store large, temporary files here
+results_dir: output_mock # store results here
+logs_dir: logs
+file_manifest: file_manifest_mock.json
+metagenome_preprocess_params: config/metagenome_preprocess_mock.yaml # path for metagenome_preprocess stage config
+contig_annotation_params: config/contig_annotation_mock.yaml # path for contig_annotation stage config
+ribo_preprocess_params: config/ribo_preprocess_mock.yaml # path for ribo_preprocess stage config
