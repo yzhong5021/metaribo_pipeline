@@ -30,7 +30,7 @@ from utils import (
     write_text,
 )
 
-
+# for cat output data matching
 GENUS_RE = re.compile(r"([^\t;]+?)\s+\(genus\):\s*([0-9]+(?:\.[0-9]+)?)")
 
 
