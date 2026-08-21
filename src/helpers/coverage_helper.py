@@ -141,13 +141,17 @@ def bin_ribo_counts(bam_path, master_df, method="overlap"):
     )
 
 
-def build_metagene(bam_path, master_df, anchor, window, length=None):
+def build_metagene(
+    bam_path, master_df, anchor, window, length=None, min_cds_reads=5
+):
     # Build start and stop metagene profiles around Bakta CDS boundaries.
     anchor = METHOD_TRANSLATOR.get(str(anchor).lower())
     if anchor is None:
         raise ValueError("anchor must be one of: median, center, 5prime, 5p, 3prime, 3p")
     window = int(window)
     length = None if length is None else int(length)
+    min_cds_reads = int(min_cds_reads)
+
     L = window * 2
 
     metagene_start = np.zeros(L, dtype=float)
@@ -210,7 +214,7 @@ def build_metagene(bam_path, master_df, anchor, window, length=None):
                         if -window <= rel < window:
                             v_stop[rel + window] += 1
 
-                if gene_total == 0:
+                if gene_total < min_cds_reads:
                     continue
                 if has_start:
                     metagene_start += v_start / gene_total

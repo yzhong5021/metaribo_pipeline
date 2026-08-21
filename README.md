@@ -161,4 +161,4 @@ jupyter lab
 
 First, run `notebooks/coverage.ipynb`, which performs RPF binning and metagene calculation.
 
-Then run `notebooks/functional_analysis.ipynb`, which performs read normalization, taxonomy/function profiling and visualization, and null permutation analysis.
+Then run `notebooks/functional_analysis.ipynb`, which performs read normalization, taxonomy/function profiling and visualization, and KEGG category enrichment analysis.
