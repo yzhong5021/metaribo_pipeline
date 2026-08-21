@@ -1,4 +1,4 @@
-"""Command-line helper for Ribo-ITP preprocessing workflow stages."""
+"""CLI helper for Ribo-ITP preprocessing workflow."""
 
 from __future__ import annotations
 

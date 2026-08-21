@@ -1,4 +1,4 @@
-"""Resolve master configuration paths for shell entrypoints."""
+"""Resolve master configuration paths for the shell scripts."""
 
 from __future__ import annotations
 

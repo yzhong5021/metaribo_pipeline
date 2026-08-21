@@ -1,4 +1,4 @@
-"""Coverage and metagene functions used by the notebook."""
+"""Helpers for the coverage analysis notebook."""
 
 from __future__ import annotations
 

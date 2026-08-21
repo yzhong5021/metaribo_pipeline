@@ -1,4 +1,4 @@
-"""Command-line helper for metagenome annotation workflow stages."""
+"""CLI helper functions for metagenome annotation"""
 
 from __future__ import annotations
 

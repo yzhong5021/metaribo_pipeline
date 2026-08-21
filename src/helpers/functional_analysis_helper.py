@@ -1,4 +1,4 @@
-"""Functional analysis helpers used by the notebook."""
+"""Helpers for the functional analysis notebook."""
 
 from __future__ import annotations
 
