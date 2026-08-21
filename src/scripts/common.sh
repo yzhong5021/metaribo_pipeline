@@ -1,12 +1,11 @@
 # Common shell functions.
 
-# Parse --master-config and leave unrelated arguments in PASSTHRU_ARGS.
+# Parse the shared --master-config option.
 function metaribo_parse_master_config() {
   local script_root="$1"
   shift
 
   MASTER_CONFIG="${MASTER_CONFIG:-${script_root}/config/master.yaml}"
-  PASSTHRU_ARGS=()
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -23,20 +22,13 @@ function metaribo_parse_master_config() {
         shift
         ;;
       *)
-        PASSTHRU_ARGS+=("$1")
-        shift
+        echo "Unknown argument: $1" >&2
+        exit 2
         ;;
     esac
   done
 
   export MASTER_CONFIG
-}
-
-function metaribo_require_no_args() {
-  if [[ "$#" -gt 0 ]]; then
-    echo "Unknown argument: $1" >&2
-    exit 2
-  fi
 }
 
 function metaribo_start_log() {

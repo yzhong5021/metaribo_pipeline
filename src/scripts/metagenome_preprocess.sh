@@ -24,17 +24,14 @@ function main() {
 
   ROOT="${master_values[0]}"
   MASTER_MANIFEST="${master_values[1]}"
-  MASTER_RIBO_PREPROCESS_CONFIG="${master_values[2]}"
-  MASTER_METAGENOME_PREPROCESS_CONFIG="${master_values[3]}"
-  MASTER_CONTIG_ANNOTATION_CONFIG="${master_values[4]}"
-  MASTER_LOG="${master_values[5]}"
+  MASTER_METAGENOME_PREPROCESS_CONFIG="${master_values[2]}"
+  MASTER_LOG="${master_values[3]}"
 
   HELPER="${ROOT}/src/helpers/metagenome_preprocess_helper.py"
   METAGENOME_PREPROCESS_CONFIG="${METAGENOME_PREPROCESS_CONFIG:-${MASTER_METAGENOME_PREPROCESS_CONFIG}}"
   MANIFEST="${METAGENOME_MANIFEST:-${MASTER_MANIFEST}}"
   LOG="${METAGENOME_LOG:-${MASTER_LOG}}"
 
-  metaribo_require_no_args "${PASSTHRU_ARGS[@]}"
   metaribo_start_log "${LOG}"
 
   cd "${ROOT}"
@@ -62,7 +59,12 @@ function main() {
     -resume
   )
   if [[ -n "${GTDB_DB:-}" ]]; then
-    metagenome_preprocess_cmd+=(--gtdb_db "${GTDB_DB}")
+    metagenome_preprocess_cmd+=(
+      --gtdb_db "${GTDB_DB}"
+      --skip_gtdbtk false
+    )
+  else
+    metagenome_preprocess_cmd+=(--skip_gtdbtk true)
   fi
 
   echo "[$(date -Is)]: Starting metagenome preprocessing"

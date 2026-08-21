@@ -1,6 +1,8 @@
 logs/
 output/
 output_mock/
+work/
+
 .nextflow*
 __pycache__/
 file_manifest*
@@ -21,3 +23,6 @@ config/samples.csv
 config/samples_meta_mock.csv
 config/samples_ribo.csv
 config/samples_ribo_mock.csv
+
+notebooks/coverage_*
+notebooks/functional_analysis_*

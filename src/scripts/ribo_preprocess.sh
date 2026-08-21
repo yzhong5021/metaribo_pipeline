@@ -14,7 +14,7 @@ function count_fastq() {
 }
 
 function count_bam() {
-  "${SAMTOOLS}" view -c "$1"
+  "${SAMTOOLS}" view -c -F 2308 "$1"
 }
 
 function append_stats() {
@@ -121,6 +121,7 @@ function run_ribo_sample() {
   "${BOWTIE2_BUILD}" --threads "${THREADS}" -f "${ref_fasta}" "${index_prefix}"
   "${BOWTIE2}" \
     --seed "${SEED}" \
+    -p "${THREADS}" \
     -x "${index_prefix}" \
     "${BT2_ARG_ARRAY[@]}" \
     -U "${reads_for_align}" \
@@ -186,6 +187,7 @@ function main() {
   local master_output
   local meta_id
   local ncrna_bed
+  local ribo_inputs
   local ribo_fq
   local ribo_id
 
@@ -199,16 +201,13 @@ function main() {
   ROOT="${master_values[0]}"
   MASTER_MANIFEST="${master_values[1]}"
   MASTER_RIBO_PREPROCESS_CONFIG="${master_values[2]}"
-  MASTER_METAGENOME_PREPROCESS_CONFIG="${master_values[3]}"
-  MASTER_CONTIG_ANNOTATION_CONFIG="${master_values[4]}"
-  MASTER_LOG="${master_values[5]}"
+  MASTER_LOG="${master_values[3]}"
 
   HELPER="${ROOT}/src/helpers/ribo_helper.py"
   RIBO_CONFIG="${RIBO_CONFIG:-${MASTER_RIBO_PREPROCESS_CONFIG}}"
   MANIFEST="${RIBO_MANIFEST:-${MASTER_MANIFEST}}"
   LOG="${RIBO_LOG:-${MASTER_LOG}}"
 
-  metaribo_require_no_args "${PASSTHRU_ARGS[@]}"
   metaribo_start_log "${LOG}"
 
   cd "${ROOT}"
@@ -229,19 +228,11 @@ function main() {
     "${LOCAL_ALIGNMENT_DIR}" \
     "${LOCAL_STATS_DIR}"
 
-  mapfile -t CUTADAPT_ARG_ARRAY < <(
-    python3 "${HELPER}" split-args --args="${CUTADAPT_ARGS}"
-  )
-  mapfile -t UMITOOLS_EXTRACT_ARG_ARRAY < <(
-    python3 "${HELPER}" split-args --args="${UMITOOLS_EXTRACT_ARGS}"
-  )
-  mapfile -t BT2_ARG_ARRAY < <(
-    python3 "${HELPER}" split-args --args="${BT2_ARGS}"
-  )
-  mapfile -t UMITOOLS_DEDUP_ARG_ARRAY < <(
-    python3 "${HELPER}" split-args --args="${UMITOOLS_DEDUP_ARGS}"
-  )
-
+  ribo_inputs="$(
+    python3 "${HELPER}" list-inputs \
+      --manifest "${MANIFEST}" \
+      --ribo-config "${RIBO_CONFIG}"
+  )"
   while IFS=$'\t' read -r ribo_id meta_id ribo_fq contigs ncrna_bed; do
     [[ "${ribo_id}" == "ribo_id" ]] && continue
     run_ribo_sample \
@@ -250,11 +241,7 @@ function main() {
       "${ribo_fq}" \
       "${contigs}" \
       "${ncrna_bed}"
-  done < <(
-    python3 "${HELPER}" list-inputs \
-      --manifest "${MANIFEST}" \
-      --ribo-config "${RIBO_CONFIG}"
-  )
+  done <<< "${ribo_inputs}"
 
   echo "[$(date -Is)]: Ribo preprocessing complete"
 }

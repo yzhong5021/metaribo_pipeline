@@ -193,18 +193,19 @@ def process_footprints(df, mapping_path):
     exploded = ko_long
     exploded = exploded.join(mapping, on="ko_clean", how="left")
     exploded = exploded[(exploded["kofam"].notna()) & (exploded["kofam"] != "Function unknown")]
+    exploded = exploded.drop_duplicates(["gene_idx", "kofam"])
 
-    agnostic_final = exploded.groupby("kofam", dropna=False)["normalized_footprints"].sum().reset_index()
-    agnostic_final.sort_values(by="normalized_footprints", ascending=False, inplace=True)
+    function_totals = exploded.groupby("kofam", dropna=False)["normalized_footprints"].sum().reset_index()
+    function_totals.sort_values(by="normalized_footprints", ascending=False, inplace=True)
 
-    taxa_final = exploded.groupby(["kofam", "genus"], dropna=False)["normalized_footprints"].sum().unstack(fill_value=0).reset_index()
-    taxa_final = taxa_final.assign(total=taxa_final.drop(columns="kofam").sum(axis=1))
-    taxa_final.sort_values(by="total", ascending=False, inplace=True)
-    taxa_final.drop(columns="total", inplace=True)
-    return agnostic_final, taxa_final
+    function_by_genus = exploded.groupby(["kofam", "genus"], dropna=False)["normalized_footprints"].sum().unstack(fill_value=0).reset_index()
+    function_by_genus = function_by_genus.assign(total=function_by_genus.drop(columns="kofam").sum(axis=1))
+    function_by_genus.sort_values(by="total", ascending=False, inplace=True)
+    function_by_genus.drop(columns="total", inplace=True)
+    return function_totals, function_by_genus
 
 
-def stacked_bp(ax, plot_data, title, xlabel, fontsize):
+def _format_stacked_barplot(ax, plot_data, title, xlabel, fontsize):
     ax.set_title(title, fontsize=18, pad=20)
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel("")
@@ -218,27 +219,22 @@ def stacked_bp(ax, plot_data, title, xlabel, fontsize):
     ax.legend(bbox_to_anchor=(0.5, -0.1), ncols=4, loc="upper center", fontsize=14)
 
 
-def plot_functional(df, mapping_path, top_n, top_s, title, fontsize):
-    _agnostic_final, taxa_final = process_footprints(df, mapping_path)
-    taxa_columns = [col for col in taxa_final.columns if col != "kofam"]
-    if "Unknown" in taxa_final.columns and len(taxa_columns) > 1:
-        taxa_final = taxa_final.drop(columns=["Unknown"])
-    if taxa_final.empty:
+def plot_functional(df, mapping_path, top_n, top_genera, title, fontsize):
+    _function_totals, function_by_genus = process_footprints(df, mapping_path)
+    if function_by_genus.empty:
         fig, ax = plt.subplots(figsize=(12, 10))
         ax.set_title(title)
         return fig
 
-    df_copy = taxa_final.copy()
-    df_copy["pathway_clean"] = df_copy["kofam"].astype(str).str.split(" - ").str[0]
-    aggregated_df = df_copy.drop(columns=["kofam"]).groupby("pathway_clean").sum(numeric_only=True)
+    aggregated_df = function_by_genus.set_index("kofam")
     aggregated_df["total_score"] = aggregated_df.sum(axis=1)
     top_pathways_df = aggregated_df.sort_values(by="total_score", ascending=False).head(top_n).drop(columns=["total_score"])
-    species_list = top_pathways_df.sum().sort_values(ascending=False).head(top_s).index
-    plot_data = top_pathways_df[species_list].iloc[::-1]
+    genera = top_pathways_df.sum().sort_values(ascending=False).head(top_genera).index
+    plot_data = top_pathways_df[genera].iloc[::-1]
 
     fig, ax = plt.subplots(figsize=(12, 10))
     plot_data.plot(kind="barh", stacked=True, ax=ax, colormap="tab20", width=0.9)
-    stacked_bp(ax, plot_data, str(title), "Relative Translational Activity", fontsize)
+    _format_stacked_barplot(ax, plot_data, str(title), "Relative Translational Activity", fontsize)
     fig.tight_layout()
     return fig
 
@@ -265,23 +261,58 @@ def bh_fdr(pvals):
     return qvals
 
 
-def _permute_chunk(n_chunk, seed, total_reads, prob, gene_length, meta_cov, edge_gene_idx, edge_target_idx, n_targets):
+def _permute_chunk(
+    n_chunk,
+    seed,
+    total_reads,
+    prob,
+    gene_length,
+    meta_cov,
+    gene_indices,
+    category_indices,
+    n_categories,
+):
     rng = np.random.default_rng(seed)
-    out = np.zeros((n_chunk, n_targets), dtype=np.float64)
+    out = np.zeros((n_chunk, n_categories), dtype=np.float64)
     for i in range(n_chunk):
         perm_reads = rng.multinomial(total_reads, prob)
         perm_norm = compute_gene_signal(perm_reads, gene_length, meta_cov=meta_cov)
-        out[i, :] = np.bincount(edge_target_idx, weights=perm_norm[edge_gene_idx], minlength=n_targets)
+        out[i, :] = np.bincount(
+            category_indices,
+            weights=perm_norm[gene_indices],
+            minlength=n_categories,
+        )
     return out
 
 
-def run_permutations_parallel(n_perm, total_reads, prob, gene_length, meta_cov, edge_gene_idx, edge_target_idx, n_targets, seed=42, n_threads=1):
+def run_permutations_parallel(
+    n_perm,
+    total_reads,
+    prob,
+    gene_length,
+    meta_cov,
+    gene_indices,
+    category_indices,
+    n_categories,
+    seed=42,
+    n_threads=1,
+):
     n_threads = max(1, int(n_threads))
     n_perm = int(n_perm)
     if n_perm <= 0:
-        return np.zeros((0, n_targets), dtype=np.float64)
+        return np.zeros((0, n_categories), dtype=np.float64)
     if n_threads == 1:
-        return _permute_chunk(n_perm, seed, total_reads, prob, gene_length, meta_cov, edge_gene_idx, edge_target_idx, n_targets)
+        return _permute_chunk(
+            n_perm,
+            seed,
+            total_reads,
+            prob,
+            gene_length,
+            meta_cov,
+            gene_indices,
+            category_indices,
+            n_categories,
+        )
 
     chunk_sizes = [n_perm // n_threads] * n_threads
     for i in range(n_perm % n_threads):
@@ -300,9 +331,9 @@ def run_permutations_parallel(n_perm, total_reads, prob, gene_length, meta_cov, 
                 prob,
                 gene_length,
                 meta_cov,
-                edge_gene_idx,
-                edge_target_idx,
-                n_targets,
+                gene_indices,
+                category_indices,
+                n_categories,
             ): idx
             for idx, (chunk_n, child_seed) in enumerate(zip(chunk_sizes, child_seeds))
         }
@@ -311,24 +342,27 @@ def run_permutations_parallel(n_perm, total_reads, prob, gene_length, meta_cov, 
     return np.vstack(blocks)
 
 
-def _target_edges(df, mapping_path=None, target_col="pathway"):
+def _category_assignments(df, mapping_path=None, target_col="pathway"):
     ko_long = _ko_long(df)
     if mapping_path is None:
-        edge_df = ko_long.rename(columns={"ko_clean": target_col})
+        assignments = ko_long.rename(columns={"ko_clean": target_col})
     else:
         mapping = _load_mapping(mapping_path, target_col=target_col)
-        edge_df = ko_long.merge(mapping, on="ko_clean", how="inner")
-    targets = pd.Index(edge_df[target_col].astype(str).unique(), name=target_col)
-    target_to_idx = {target: i for i, target in enumerate(targets)}
-    return (
-        targets,
-        edge_df["gene_idx"].to_numpy(dtype=np.int32),
-        edge_df[target_col].map(target_to_idx).to_numpy(dtype=np.int32),
-    )
+        assignments = ko_long.merge(mapping, on="ko_clean", how="inner")
+    assignments[target_col] = assignments[target_col].astype(str)
+    return assignments[["gene_idx", target_col]].drop_duplicates()
 
 
-def null_functional_test(df, mapping_path=None, n_perm=10000, seed=42, n_threads=1, target_col="pathway"):
-    # Permute ribo counts across genes to ask which functions are higher or lower than expected.
+def null_functional_test(
+    df,
+    mapping_path=None,
+    n_perm=10000,
+    seed=42,
+    n_threads=1,
+    target_col="pathway",
+    min_observed_reads=2,
+):
+    # Permute ribo counts across genes to see which functions are higher or lower than expected.
     work = df.copy()
     if "binned_counts" in work.columns:
         observed_reads = _numeric(work["binned_counts"]).to_numpy(dtype=np.int64)
@@ -339,48 +373,71 @@ def null_functional_test(df, mapping_path=None, n_perm=10000, seed=42, n_threads
 
     gene_length = _numeric(work["gene_length"]).replace(0, np.nan).fillna(1).to_numpy(dtype=np.float64)
     meta_cov = _numeric(work["coverage"]).to_numpy(dtype=np.float64) if "coverage" in work.columns else None
-    targets, edge_gene_idx, edge_target_idx = _target_edges(work, mapping_path=mapping_path, target_col=target_col)
-    if len(targets) == 0:
-        return {"stats": pd.DataFrame(), "perm": np.zeros((int(n_perm), 0)), "targets": targets}
+    assignments = _category_assignments(work, mapping_path=mapping_path, target_col=target_col)
+    if assignments.empty:
+        categories = pd.Index([], name=target_col)
+        return {"stats": pd.DataFrame(), "perm": np.zeros((int(n_perm), 0)), "targets": categories}
+
+    category_reads = (
+        assignments.assign(
+            observed_reads=observed_reads[assignments["gene_idx"].to_numpy()]
+        )
+        .groupby(target_col, sort=False)["observed_reads"]
+        .sum()
+    )
+    category_reads = category_reads[category_reads >= int(min_observed_reads)]
+    categories = pd.Index(category_reads.index, name=target_col)
+    if categories.empty:
+        return {"stats": pd.DataFrame(), "perm": np.zeros((int(n_perm), 0)), "targets": categories}
+
+    assignments = assignments[assignments[target_col].isin(categories)]
+    gene_indices = assignments["gene_idx"].to_numpy(dtype=np.int32)
+    category_indices = categories.get_indexer(assignments[target_col]).astype(np.int32)
+    observed_category_reads = category_reads.to_numpy(dtype=np.int64)
 
     obs_norm = compute_gene_signal(observed_reads, gene_length, meta_cov=meta_cov)
-    observed_target = np.bincount(edge_target_idx, weights=obs_norm[edge_gene_idx], minlength=len(targets))
+    observed_category = np.bincount(
+        category_indices,
+        weights=obs_norm[gene_indices],
+        minlength=len(categories),
+    )
     total_reads = int(observed_reads.sum())
     prob_weights = gene_length * (meta_cov + 1.0 if meta_cov is not None else 1.0)
     prob = prob_weights / prob_weights.sum() if prob_weights.sum() > 0 else np.repeat(1 / len(gene_length), len(gene_length))
 
-    perm_target = run_permutations_parallel(
+    permuted_categories = run_permutations_parallel(
         n_perm=n_perm,
         total_reads=total_reads,
         prob=prob,
         gene_length=gene_length,
         meta_cov=meta_cov,
-        edge_gene_idx=edge_gene_idx,
-        edge_target_idx=edge_target_idx,
-        n_targets=len(targets),
+        gene_indices=gene_indices,
+        category_indices=category_indices,
+        n_categories=len(categories),
         seed=seed,
         n_threads=n_threads,
     )
-    perm_mean = perm_target.mean(axis=0) if len(perm_target) else np.zeros(len(targets))
-    perm_sd = perm_target.std(axis=0, ddof=1) if len(perm_target) > 1 else np.zeros(len(targets))
+    perm_mean = permuted_categories.mean(axis=0) if len(permuted_categories) else np.zeros(len(categories))
+    perm_sd = permuted_categories.std(axis=0, ddof=1) if len(permuted_categories) > 1 else np.zeros(len(categories))
     denom = max(1, int(n_perm))
-    p_enrich = (1 + (perm_target >= observed_target).sum(axis=0)) / (1 + denom)
-    p_deplete = (1 + (perm_target <= observed_target).sum(axis=0)) / (1 + denom)
-    abs_obs_dev = np.abs(observed_target - perm_mean)
-    abs_perm_dev = np.abs(perm_target - perm_mean[None, :]) if len(perm_target) else np.zeros((0, len(targets)))
+    p_enrich = (1 + (permuted_categories >= observed_category).sum(axis=0)) / (1 + denom)
+    p_deplete = (1 + (permuted_categories <= observed_category).sum(axis=0)) / (1 + denom)
+    abs_obs_dev = np.abs(observed_category - perm_mean)
+    abs_perm_dev = np.abs(permuted_categories - perm_mean[None, :]) if len(permuted_categories) else np.zeros((0, len(categories)))
     p_two_sided = (1 + (abs_perm_dev >= abs_obs_dev[None, :]).sum(axis=0)) / (1 + denom)
     eps = 1e-12
 
     stats = pd.DataFrame(
         {
-            target_col: targets,
-            "target": targets,
-            "target_display": targets,
-            "observed_norm": observed_target,
+            target_col: categories,
+            "target": categories,
+            "target_display": categories,
+            "observed_reads": observed_category_reads,
+            "observed_norm": observed_category,
             "perm_mean_norm": perm_mean,
             "perm_sd_norm": perm_sd,
-            "log2_fc_obs_vs_null": np.log2((observed_target + eps) / (perm_mean + eps)),
-            "z_score": (observed_target - perm_mean) / (perm_sd + eps),
+            "log2_fc_obs_vs_null": np.log2((observed_category + eps) / (perm_mean + eps)),
+            "z_score": (observed_category - perm_mean) / (perm_sd + eps),
             "p_enrich": p_enrich,
             "p_deplete": p_deplete,
             "p_two_sided": p_two_sided,
@@ -390,12 +447,18 @@ def null_functional_test(df, mapping_path=None, n_perm=10000, seed=42, n_threads
         }
     ).sort_values("q_two_sided", ascending=True)
     stats["neglog10_q"] = -np.log10(np.clip(stats["q_two_sided"], 1e-300, 1))
-    return {"stats": stats, "perm": perm_target, "targets": targets, "observed": observed_target, "target_col": target_col}
+    return {
+        "stats": stats,
+        "perm": permuted_categories,
+        "targets": categories,
+        "observed": observed_category,
+        "target_col": target_col,
+    }
 
 
 def plot_functional_test(null_results, log2_thr=1.0, sig_thr=2.5, max_labels=20):
     stats = null_results["stats"] if isinstance(null_results, dict) else null_results
-    fig, ax = plt.subplots(figsize=(10, 7))
+    fig, ax = plt.subplots()
     if stats.empty:
         ax.set_title("Pathway Permutation Significance")
         return fig
@@ -407,9 +470,23 @@ def plot_functional_test(null_results, log2_thr=1.0, sig_thr=2.5, max_labels=20)
     ax.axhline(sig_thr, color="black", linestyle="--", linewidth=1, label=f"-log10(q) = {sig_thr}")
     ax.axvline(log2_thr, color="gray", linestyle=":", linewidth=1)
     ax.axvline(-log2_thr, color="gray", linestyle=":", linewidth=1)
-    label_df = vol[(vol["neglog10_q"] > sig_thr) & (np.abs(vol["log2_fc_obs_vs_null"]) > log2_thr)].head(max_labels)
+    label_df = (
+        vol[
+            (vol["neglog10_q"] > sig_thr)
+            & (vol["log2_fc_obs_vs_null"].abs() > log2_thr)
+        ]
+        .sort_values("neglog10_q", ascending=False)
+        .head(max_labels)
+    )
     for _, row in label_df.iterrows():
-        ax.text(row["log2_fc_obs_vs_null"], row["neglog10_q"], str(row.get("target_display", row.get("target", "")))[:60], fontsize=8, alpha=0.9)
+        x = row["log2_fc_obs_vs_null"]
+        y = row["neglog10_q"]
+        ax.text(
+            x,
+            y,
+            str(row.get("target_display", row.get("target", "")))[:60],
+            fontsize=8,
+        )
     ax.set_xlabel("log2(Observed / Null mean)")
     ax.set_ylabel("-log10(FDR q-value, two-sided)")
     ax.set_title("Pathway Permutation Significance")

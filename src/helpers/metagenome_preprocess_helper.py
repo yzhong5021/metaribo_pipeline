@@ -10,12 +10,6 @@ import sys
 from pathlib import Path
 
 from utils import (
-    FILE_MANIFEST,
-    METAGENOME_RESULTS,
-    METAGENOME_PREPROCESS_PARAMS,
-    METAGENOME_SCRATCH,
-    METAGENOME_WORK,
-    ROOT,
     WorkflowError,
     copy_bam_index,
     copy_if_needed,
@@ -23,7 +17,9 @@ from utils import (
     fail,
     load_manifest,
     load_yaml,
+    master_config,
     read_samplesheet,
+    require_keys,
     require_path,
     resolve_command,
     resolve_repo_path,
@@ -35,36 +31,61 @@ from utils import (
 
 
 NEXTFLOW_COMMAND = "nextflow"
+METAGENOME_CONFIG_KEYS = (
+    "params_file",
+    "nextflow_config",
+    "samplesheet",
+    "gtdb_db",
+    "apptainer_cache",
+)
+
+
+def load_metagenome_config(path: Path) -> dict:
+    cfg = load_yaml(path)
+    require_keys(cfg, METAGENOME_CONFIG_KEYS, path)
+    return cfg
 
 
 def gtdb_db_path(cfg: dict) -> str:
     raw_gtdb_db = cfg.get("gtdb_db")
-    return "" if raw_gtdb_db is None else str(raw_gtdb_db).strip()
+    if raw_gtdb_db is None:
+        return ""
+    value = str(raw_gtdb_db).strip()
+    return str(Path(value).expanduser()) if value else ""
 
 
-def check_paths(metagenome_preprocess_config: Path, version_config: Path | None = None) -> None:
-    cfg = load_yaml(metagenome_preprocess_config)
+def check_paths(metagenome_preprocess_config: Path, master: dict) -> None:
+    cfg = load_metagenome_config(metagenome_preprocess_config)
     gtdb_db = gtdb_db_path(cfg)
     if gtdb_db:
         require_path(gtdb_db, "GTDB-Tk database", "dir")
-    ensure_dir(resolve_scratch_path(cfg["apptainer_cache"]))
-    ensure_dir(METAGENOME_WORK)
-    rows = read_samplesheet(resolve_repo_path(cfg["samplesheet"]), check_files=True)
+    require_path(
+        resolve_repo_path(cfg["params_file"], master),
+        "nf-core/mag parameters",
+        "file",
+    )
+    require_path(
+        resolve_repo_path(cfg["nextflow_config"], master),
+        "Nextflow configuration",
+        "file",
+    )
+    ensure_dir(resolve_scratch_path(cfg["apptainer_cache"], master))
+    ensure_dir(master["metagenome_work"])
+    rows = read_samplesheet(resolve_repo_path(cfg["samplesheet"], master), check_files=True)
     print(f"paths are all valid for {len(rows)} nf-core/mag samples")
 
 
-def command_shell(metagenome_preprocess_config: Path) -> str:
-    cfg = load_yaml(metagenome_preprocess_config)
+def command_shell(metagenome_preprocess_config: Path, master: dict) -> str:
+    cfg = load_metagenome_config(metagenome_preprocess_config)
     values = {
         "NEXTFLOW": resolve_command(NEXTFLOW_COMMAND),
-        "PARAMS_FILE": resolve_repo_path(cfg["params_file"]),
-        "NEXTFLOW_CONFIG": resolve_repo_path(cfg["nextflow_config"]),
-        "SAMPLESHEET": resolve_repo_path(cfg["samplesheet"]),
-        "OUTDIR": METAGENOME_SCRATCH,
-        "LOCAL_OUTDIR": METAGENOME_RESULTS,
+        "PARAMS_FILE": resolve_repo_path(cfg["params_file"], master),
+        "NEXTFLOW_CONFIG": resolve_repo_path(cfg["nextflow_config"], master),
+        "SAMPLESHEET": resolve_repo_path(cfg["samplesheet"], master),
+        "OUTDIR": master["metagenome_scratch"],
         "GTDB_DB": gtdb_db_path(cfg),
-        "APPTAINER_CACHEDIR": resolve_scratch_path(cfg["apptainer_cache"]),
-        "WORK_DIR": METAGENOME_WORK,
+        "APPTAINER_CACHEDIR": resolve_scratch_path(cfg["apptainer_cache"], master),
+        "WORK_DIR": master["metagenome_work"],
     }
     return shell_assignments(values)
 
@@ -81,27 +102,19 @@ def parse_gtdb_summary(path: Path, allowed_bins: set[str]) -> dict[str, str]:
     bin_to_genus: dict[str, str] = {}
     with path.open() as handle:
         reader = csv.DictReader(handle, delimiter="\t")
+        required_columns = {"user_genome", "classification"}
+        if not required_columns.issubset(reader.fieldnames or []):
+            fail(f"GTDB-Tk summary lacks required columns: {path}")
         for row in reader:
-            genome = strip_fasta_suffix(row.get("user_genome", ""))
+            genome = strip_fasta_suffix(row.get("user_genome") or "")
             if genome not in allowed_bins:
                 continue
-            for part in row.get("classification", "").split(";"):
+            for raw_part in (row.get("classification") or "").split(";"):
+                part = raw_part.strip()
                 if part.startswith("g__") and len(part) > 3:
                     bin_to_genus[genome] = part[3:]
                     break
     return bin_to_genus
-
-
-def resolve_bin_genus(bin_id: str, bin_to_genus: dict[str, str]) -> str | None:
-    candidates = [strip_fasta_suffix(bin_id), Path(bin_id).name, strip_fasta_suffix(Path(bin_id).name)]
-    for candidate in candidates:
-        if candidate in bin_to_genus:
-            return bin_to_genus[candidate]
-    stripped = strip_fasta_suffix(bin_id)
-    for known, genus in bin_to_genus.items():
-        if known.endswith("." + stripped) or known.endswith("-" + stripped):
-            return genus
-    return None
 
 
 def gunzip_to_fasta(gz_path: Path, fasta_path: Path | None = None) -> Path:
@@ -121,9 +134,16 @@ def find_one(paths: list[Path], label: str) -> Path:
     return sorted(paths)[0]
 
 
-def collect_outputs(manifest_path: Path, samplesheet: Path, outdir: Path, output_dir: Path) -> None:
+def collect_outputs(
+    manifest_path: Path,
+    samplesheet: Path,
+    outdir: Path,
+    output_dir: Path,
+    master: dict,
+    metagenome_preprocess_config: Path,
+) -> None:
     # After nf-core/mag finishes, keep the contigs, BAMs, bins, and genus calls the rest of the workflow needs.
-    output_dir = resolve_repo_path(output_dir)
+    output_dir = resolve_repo_path(output_dir, master)
     contigs_dir = output_dir / "contigs"
     bins_dir = output_dir / "bins"
     bowtie2_dir = output_dir / "bowtie2"
@@ -136,12 +156,18 @@ def collect_outputs(manifest_path: Path, samplesheet: Path, outdir: Path, output
     metagenome = manifest.setdefault("metagenome", {})
     for key in ("contigs", "bins", "bowtie2"):
         metagenome.setdefault(key, {})
+        if not isinstance(metagenome[key], dict):
+            fail(f"Manifest metagenome.{key} must be a JSON object")
 
-    gtdb_dir = outdir / "Taxonomy" / "GTDB-Tk"
-    gtdb_summaries = [p for p in [gtdb_dir / "gtdbtk_summary.tsv", *sorted(gtdb_dir.glob("*summary.tsv"))] if p.exists()]
-    gtdb_summary = sorted(gtdb_summaries)[0] if gtdb_summaries else None
-    if gtdb_summary is not None:
+    gtdb_enabled = bool(
+        gtdb_db_path(load_metagenome_config(metagenome_preprocess_config))
+    )
+    gtdb_summary = outdir / "Taxonomy" / "GTDB-Tk" / "gtdbtk_summary.tsv"
+    if gtdb_enabled:
+        require_path(gtdb_summary, "GTDB-Tk classification summary", "file")
         metagenome.setdefault("contig_to_genus", {})
+        if not isinstance(metagenome["contig_to_genus"], dict):
+            fail("Manifest metagenome.contig_to_genus must be a JSON object")
         ensure_dir(contig_to_genus_dir)
 
     for row in samples:
@@ -153,12 +179,17 @@ def collect_outputs(manifest_path: Path, samplesheet: Path, outdir: Path, output
         bam = copy_if_needed(source_bam, bowtie2_dir / source_bam.name)
         copy_bam_index(source_bam, bam)
         dastool_dir = outdir / "GenomeBinning" / "DASTool"
-        source_bins = sorted((dastool_dir / "bins").glob(f"MEGAHIT-*Refined-{sample}.*.fa")) or sorted((dastool_dir / "bins").glob(f"*{sample}*.fa"))
+        source_bins = sorted(
+            (dastool_dir / "bins").glob(f"MEGAHIT-*Refined-{sample}.*.fa")
+        )
         bins = [copy_if_needed(path, bins_dir / path.name) for path in source_bins]
-        if gtdb_summary is not None:
+        if gtdb_enabled:
             if not source_bins:
                 fail(f"No DASTool bins found for {sample}")
-            bin_to_genus = parse_gtdb_summary(gtdb_summary, {strip_fasta_suffix(p.name) for p in source_bins})
+            bin_to_genus = parse_gtdb_summary(
+                gtdb_summary,
+                {strip_fasta_suffix(path.name) for path in source_bins},
+            )
             contig2bin = find_one(sorted(dastool_dir.glob(f"MEGAHIT-*{sample}*_DASTool_contig2bin.tsv")), f"{sample} DASTool contig2bin TSV")
             contig_to_genus: dict[str, str] = {}
             with contig2bin.open() as handle:
@@ -168,7 +199,7 @@ def collect_outputs(manifest_path: Path, samplesheet: Path, outdir: Path, output
                     fields = line.rstrip("\n").split("\t")
                     if len(fields) < 2:
                         fail(f"Malformed DASTool contig2bin row: {line.rstrip()}")
-                    genus = resolve_bin_genus(fields[1], bin_to_genus)
+                    genus = bin_to_genus.get(strip_fasta_suffix(fields[1]))
                     if genus:
                         contig_to_genus[fields[0]] = genus
             contig_to_genus_path = contig_to_genus_dir / f"contig_to_genus_{sample}.tsv"
@@ -185,27 +216,36 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="metagenome preprocessing helper")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("validate-samples")
-    p.add_argument("--samplesheet", type=Path, default=ROOT / "config" / "samples.csv")
+    p.add_argument("--samplesheet", type=Path, default=None)
     p = sub.add_parser("check-paths")
-    p.add_argument("--metagenome-preprocess-config", type=Path, default=METAGENOME_PREPROCESS_PARAMS)
-    p.add_argument("--versions", type=Path, default=None)
+    p.add_argument("--metagenome-preprocess-config", type=Path, default=None)
     p = sub.add_parser("command-shell")
-    p.add_argument("--metagenome-preprocess-config", type=Path, default=METAGENOME_PREPROCESS_PARAMS)
+    p.add_argument("--metagenome-preprocess-config", type=Path, default=None)
     p = sub.add_parser("collect-outputs")
-    p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
+    p.add_argument("--manifest", type=Path, default=None)
     p.add_argument("--samplesheet", type=Path, required=True)
-    p.add_argument("--metagenome-preprocess-config", type=Path, default=METAGENOME_PREPROCESS_PARAMS)
+    p.add_argument("--metagenome-preprocess-config", type=Path, default=None)
     args = parser.parse_args()
     try:
+        master = master_config()
+        metagenome_config = getattr(args, "metagenome_preprocess_config", None) or master["metagenome_preprocess_params"]
         if args.command == "validate-samples":
-            rows = read_samplesheet(args.samplesheet, check_files=True)
-            print(f"Validated {args.samplesheet} with {len(rows)} samples")
+            samplesheet = args.samplesheet or master["root"] / "config" / "samples.csv"
+            rows = read_samplesheet(samplesheet, check_files=True)
+            print(f"Validated {samplesheet} with {len(rows)} samples")
         elif args.command == "check-paths":
-            check_paths(args.metagenome_preprocess_config, args.versions)
+            check_paths(metagenome_config, master)
         elif args.command == "command-shell":
-            print(command_shell(args.metagenome_preprocess_config))
+            print(command_shell(metagenome_config, master))
         elif args.command == "collect-outputs":
-            collect_outputs(args.manifest, args.samplesheet, METAGENOME_SCRATCH, METAGENOME_RESULTS)
+            collect_outputs(
+                args.manifest or master["file_manifest"],
+                args.samplesheet,
+                master["metagenome_scratch"],
+                master["metagenome_results"],
+                master,
+                metagenome_config,
+            )
     except WorkflowError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

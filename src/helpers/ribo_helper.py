@@ -5,16 +5,11 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
-import shlex
 import shutil
 import sys
 from pathlib import Path
 
 from utils import (
-    FILE_MANIFEST,
-    RIBO_PREPROCESS_PARAMS,
-    RIBO_RESULTS,
-    RIBO_SCRATCH,
     WorkflowError,
     copy_bam_index,
     copy_if_needed,
@@ -22,7 +17,11 @@ from utils import (
     fail,
     load_manifest,
     load_yaml,
+    master_config,
+    parse_shell_args,
+    require_keys,
     require_path,
+    resolve_command,
     resolve_repo_path,
     save_manifest,
     shell_assignments,
@@ -47,26 +46,44 @@ def as_bool(value: object, key: str) -> bool:
 def read_ribo_samples(samplesheet_path: Path, check_files: bool = True) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     require_path(samplesheet_path, "samples_ribo.csv", "file")
-    with samplesheet_path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames != RIBO_SAMPLE_COLUMNS:
-            fail(f"{samplesheet_path} columns must be exactly: {','.join(RIBO_SAMPLE_COLUMNS)}")
-        for row in reader:
-            rows.append({col: (row.get(col) or "") for col in RIBO_SAMPLE_COLUMNS})
+    try:
+        with samplesheet_path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != RIBO_SAMPLE_COLUMNS:
+                fail(
+                    f"{samplesheet_path} columns must be exactly: "
+                    f"{','.join(RIBO_SAMPLE_COLUMNS)}"
+                )
+            for line_no, row in enumerate(reader, start=2):
+                if None in row:
+                    fail(
+                        f"Malformed row {line_no} in {samplesheet_path}: "
+                        "too many fields"
+                    )
+                rows.append(
+                    {
+                        col: (row.get(col) or "").strip()
+                        for col in RIBO_SAMPLE_COLUMNS
+                    }
+                )
+    except csv.Error as exc:
+        fail(f"Malformed CSV in {samplesheet_path}: {exc}")
+    except OSError as exc:
+        fail(f"Cannot read Ribo sample sheet {samplesheet_path}: {exc}")
     if not rows:
         fail(f"{samplesheet_path} must contain at least one ribo sample row")
     seen: set[str] = set()
     for row in rows:
-        sample = row["id"]
+        ribo_id = row["id"]
         for col in RIBO_SAMPLE_COLUMNS:
             if not row[col]:
-                fail(f"Ribo sample {sample or '<blank>'} is missing required field '{col}'")
-        if sample in seen:
-            fail(f"Duplicate ribo id in {samplesheet_path}: {sample}")
-        seen.add(sample)
+                fail(f"Ribo sample {ribo_id or '<blank>'} is missing required field '{col}'")
+        if ribo_id in seen:
+            fail(f"Duplicate ribo id in {samplesheet_path}: {ribo_id}")
+        seen.add(ribo_id)
         fastq = Path(row["path"]).expanduser()
         if check_files:
-            require_path(fastq, f"Ribo sample {sample} FASTQ", "file")
+            require_path(fastq, f"Ribo sample {ribo_id} FASTQ", "file")
         row["path"] = str(fastq)
     return rows
 
@@ -85,98 +102,100 @@ def ribo_config(path: Path) -> dict:
         "seed",
         "threads",
     ]
-    missing = [key for key in required if key not in cfg]
-    if missing:
-        fail(f"{path} is missing required keys: {', '.join(missing)}")
+    require_keys(cfg, required, path)
     cfg["contains_umi"] = as_bool(cfg["contains_umi"], "contains_umi")
     cfg["remove_ncrna"] = as_bool(cfg["remove_ncrna"], "remove_ncrna")
     cfg["remove_multimappers"] = as_bool(cfg["remove_multimappers"], "remove_multimappers")
+    for key in ("seed", "threads"):
+        if isinstance(cfg[key], bool) or not isinstance(cfg[key], int):
+            fail(f"{path} parameter {key} must be an integer")
+    if cfg["threads"] < 1:
+        fail(f"{path} parameter threads must be at least 1")
     return cfg
 
 
-def samplesheet_from_config(cfg: dict) -> Path:
-    return resolve_repo_path(cfg["samplesheet"])
-
-
-RIBO_COMMANDS = {
-    "cutadapt": "cutadapt",
-    "umi_tools": "umi_tools",
-    "bowtie2": "bowtie2",
-    "bowtie2_build": "bowtie2-build",
-    "samtools": "samtools",
-    "bedtools": "bedtools",
-}
-
-
-def command_name(config: dict, key: str) -> str:
-    commands = config.get("commands", {})
-    return str(commands.get(key, RIBO_COMMANDS[key]))
-
-
-def validate_manifest_inputs(manifest_path: Path, samples: list[dict[str, str]], remove_ncrna: bool, check_paths: bool = True) -> None:
+def validate_manifest_inputs(
+    manifest_path: Path,
+    samples: list[dict[str, str]],
+    remove_ncrna: bool,
+    check_files: bool = True,
+) -> dict:
     manifest = load_manifest(manifest_path)
     metagenome = manifest.get("metagenome", {})
-    if "contigs" not in metagenome:
+    if not isinstance(metagenome.get("contigs"), dict):
         fail("Manifest metagenome.contigs is missing; run metagenome preprocessing collection first")
-    if remove_ncrna and "bakta_ncrna_bed" not in metagenome:
+    if remove_ncrna and not isinstance(metagenome.get("bakta_ncrna_bed"), dict):
         fail("Manifest metagenome.bakta_ncrna_bed is missing; run metagenome annotation before ncRNA filtering")
     for row in samples:
         ribo_id = row["id"]
         meta_id = row["meta_id"]
         if meta_id not in metagenome["contigs"]:
             fail(f"Ribo sample {ribo_id} meta_id {meta_id} is missing from manifest metagenome.contigs")
-        if check_paths:
+        if check_files:
             require_path(metagenome["contigs"][meta_id], f"{ribo_id} metagenome contigs for {meta_id}", "file")
         if remove_ncrna:
             if meta_id not in metagenome["bakta_ncrna_bed"]:
                 fail(f"Ribo sample {ribo_id} meta_id {meta_id} is missing from manifest metagenome.bakta_ncrna_bed")
-            if check_paths:
+            if check_files:
                 require_path(metagenome["bakta_ncrna_bed"][meta_id], f"{ribo_id} ncRNA BED for {meta_id}", "file")
+    return metagenome
 
 
-def check_paths(manifest_path: Path, config_path: Path, version_config: Path | None = None) -> None:
+def check_paths(manifest_path: Path, config_path: Path, master: dict) -> None:
     cfg = ribo_config(config_path)
-    samples = read_ribo_samples(samplesheet_from_config(cfg), check_files=True)
-    validate_manifest_inputs(manifest_path, samples, cfg["remove_ncrna"], check_paths=True)
-    ensure_dir(RIBO_SCRATCH)
-    ensure_dir(RIBO_RESULTS)
+    samples = read_ribo_samples(
+        resolve_repo_path(cfg["samplesheet"], master), check_files=True
+    )
+    validate_manifest_inputs(manifest_path, samples, cfg["remove_ncrna"])
+    ensure_dir(master["ribo_scratch"])
+    ensure_dir(master["ribo_results"])
     print(f"paths are all valid for {len(samples)} ribo preprocessing samples")
 
 
-def config_shell(config_path: Path, version_config: Path | None = None) -> str:
+def config_shell(config_path: Path, master: dict) -> str:
     cfg = ribo_config(config_path)
     values = {
-        "CUTADAPT": command_name(cfg, "cutadapt"),
-        "UMI_TOOLS": command_name(cfg, "umi_tools"),
-        "BOWTIE2": command_name(cfg, "bowtie2"),
-        "BOWTIE2_BUILD": command_name(cfg, "bowtie2_build"),
-        "SAMTOOLS": command_name(cfg, "samtools"),
-        "BEDTOOLS": command_name(cfg, "bedtools"),
-        "CUTADAPT_ARGS": cfg.get("cutadapt_args", ""),
-        "UMITOOLS_EXTRACT_ARGS": cfg.get("umitools_extract_args", ""),
-        "BT2_ARGS": cfg.get("bt2_args", ""),
-        "UMITOOLS_DEDUP_ARGS": cfg.get("umitools_dedup_args", ""),
+        "CUTADAPT": resolve_command("cutadapt"),
+        "UMI_TOOLS": resolve_command("umi_tools"),
+        "BOWTIE2": resolve_command("bowtie2"),
+        "BOWTIE2_BUILD": resolve_command("bowtie2-build"),
+        "SAMTOOLS": resolve_command("samtools"),
+        "BEDTOOLS": resolve_command("bedtools"),
+        "CUTADAPT_ARG_ARRAY": parse_shell_args(
+            cfg["cutadapt_args"], "cutadapt_args", config_path
+        ),
+        "UMITOOLS_EXTRACT_ARG_ARRAY": parse_shell_args(
+            cfg["umitools_extract_args"], "umitools_extract_args", config_path
+        ),
+        "BT2_ARG_ARRAY": parse_shell_args(
+            cfg["bt2_args"], "bt2_args", config_path
+        ),
+        "UMITOOLS_DEDUP_ARG_ARRAY": parse_shell_args(
+            cfg["umitools_dedup_args"], "umitools_dedup_args", config_path
+        ),
         "CONTAINS_UMI": int(cfg["contains_umi"]),
         "REMOVE_NCRNA": int(cfg["remove_ncrna"]),
         "REMOVE_MULTIMAPPERS": int(cfg["remove_multimappers"]),
-        "RIBO_OUTDIR": RIBO_SCRATCH,
-        "RIBO_DIR": RIBO_SCRATCH / "ribo",
-        "BT2_DIR": RIBO_SCRATCH / "bt2",
-        "REFERENCE_DIR": RIBO_SCRATCH / "references",
-        "LOCAL_OUTDIR": RIBO_RESULTS,
-        "LOCAL_ALIGNMENT_DIR": RIBO_RESULTS / "alignment",
-        "LOCAL_STATS_DIR": RIBO_RESULTS / "stats",
+        "RIBO_DIR": master["ribo_scratch"] / "ribo",
+        "BT2_DIR": master["ribo_scratch"] / "bt2",
+        "REFERENCE_DIR": master["ribo_scratch"] / "references",
+        "LOCAL_OUTDIR": master["ribo_results"],
+        "LOCAL_ALIGNMENT_DIR": master["ribo_results"] / "alignment",
+        "LOCAL_STATS_DIR": master["ribo_results"] / "stats",
         "SEED": cfg["seed"],
         "THREADS": cfg["threads"],
     }
     return shell_assignments(values)
 
 
-def list_inputs(manifest_path: Path, config_path: Path) -> None:
+def list_inputs(manifest_path: Path, config_path: Path, master: dict) -> None:
     cfg = ribo_config(config_path)
-    samples = read_ribo_samples(samplesheet_from_config(cfg), check_files=False)
-    validate_manifest_inputs(manifest_path, samples, cfg["remove_ncrna"], check_paths=False)
-    metagenome = load_manifest(manifest_path)["metagenome"]
+    samples = read_ribo_samples(
+        resolve_repo_path(cfg["samplesheet"], master), check_files=False
+    )
+    metagenome = validate_manifest_inputs(
+        manifest_path, samples, cfg["remove_ncrna"], check_files=False
+    )
     print("ribo_id\tmeta_id\tribo_fq\tcontigs\tncrna_bed")
     for row in samples:
         meta_id = row["meta_id"]
@@ -229,41 +248,35 @@ def append_stats(path: Path, sample: str, stage: str, before: int, after: int) -
         writer.writerow([sample, stage, before, after, removed, f"{proportion:.6f}"])
 
 
-def update_manifest(manifest_path: Path, sample: str, alignment_bam: Path, stats: Path, local_outdir: Path | None = None) -> None:
+def update_manifest(manifest_path: Path, sample: str, alignment_bam: Path, stats: Path, master: dict, local_outdir: Path | None = None) -> None:
     # Add the final ribo alignment and stats file for downstream notebooks.
     if local_outdir is not None:
-        local_outdir = resolve_repo_path(local_outdir)
+        local_outdir = resolve_repo_path(local_outdir, master)
         target_bam = copy_if_needed(alignment_bam, local_outdir / "alignment" / alignment_bam.name)
         copy_bam_index(alignment_bam, target_bam)
         alignment_bam = target_bam
         stats = copy_if_needed(stats, local_outdir / "stats" / stats.name)
     manifest = load_manifest(manifest_path)
     ribo = manifest.setdefault("ribo", {})
-    ribo.setdefault("alignment", {})
-    ribo.setdefault("stats", {})
-    ribo["alignment"][sample] = str(alignment_bam)
-    ribo["stats"][sample] = str(stats)
+    for key, path in {"alignment": alignment_bam, "stats": stats}.items():
+        entries = ribo.setdefault(key, {})
+        if not isinstance(entries, dict):
+            fail(f"Manifest ribo.{key} must be a JSON object")
+        entries[sample] = str(path)
     save_manifest(manifest_path, manifest)
-
-
-def split_args(args: str) -> None:
-    for value in shlex.split(args or ""):
-        print(value)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="ribo preprocessing helper")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("check-paths")
-    p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
-    p.add_argument("--ribo-config", type=Path, default=RIBO_PREPROCESS_PARAMS)
-    p.add_argument("--versions", type=Path, default=None)
+    p.add_argument("--manifest", type=Path, default=None)
+    p.add_argument("--ribo-config", type=Path, default=None)
     p = sub.add_parser("config-shell")
-    p.add_argument("--ribo-config", type=Path, default=RIBO_PREPROCESS_PARAMS)
-    p.add_argument("--versions", type=Path, default=None)
+    p.add_argument("--ribo-config", type=Path, default=None)
     p = sub.add_parser("list-inputs")
-    p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
-    p.add_argument("--ribo-config", type=Path, default=RIBO_PREPROCESS_PARAMS)
+    p.add_argument("--manifest", type=Path, default=None)
+    p.add_argument("--ribo-config", type=Path, default=None)
     p = sub.add_parser("reference-path")
     p.add_argument("--contigs", type=Path, required=True)
     p.add_argument("--sample", required=True)
@@ -284,21 +297,23 @@ def main() -> int:
     p.add_argument("--before", type=int, required=True)
     p.add_argument("--after", type=int, required=True)
     p = sub.add_parser("update-manifest")
-    p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
+    p.add_argument("--manifest", type=Path, default=None)
     p.add_argument("--sample", required=True)
     p.add_argument("--alignment-bam", type=Path, required=True)
     p.add_argument("--stats", type=Path, required=True)
     p.add_argument("--local-outdir", type=Path)
-    p = sub.add_parser("split-args")
-    p.add_argument("--args", default="")
     args = parser.parse_args()
     try:
+        if args.command in {"check-paths", "config-shell", "list-inputs"}:
+            master = master_config()
+            manifest = getattr(args, "manifest", None) or master["file_manifest"]
+            ribo_config_path = args.ribo_config or master["ribo_preprocess_params"]
         if args.command == "check-paths":
-            check_paths(args.manifest, args.ribo_config, args.versions)
+            check_paths(manifest, ribo_config_path, master)
         elif args.command == "config-shell":
-            print(config_shell(args.ribo_config, args.versions))
+            print(config_shell(ribo_config_path, master))
         elif args.command == "list-inputs":
-            list_inputs(args.manifest, args.ribo_config)
+            list_inputs(manifest, ribo_config_path, master)
         elif args.command == "reference-path":
             print(reference_path(args.contigs, args.sample, args.reference_dir))
         elif args.command == "prepare-reference":
@@ -310,9 +325,9 @@ def main() -> int:
         elif args.command == "append-stats":
             append_stats(args.stats, args.sample, args.stage, args.before, args.after)
         elif args.command == "update-manifest":
-            update_manifest(args.manifest, args.sample, args.alignment_bam, args.stats, args.local_outdir)
-        elif args.command == "split-args":
-            split_args(args.args)
+            master = master_config()
+            manifest = args.manifest or master["file_manifest"]
+            update_manifest(manifest, args.sample, args.alignment_bam, args.stats, master, args.local_outdir)
     except WorkflowError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

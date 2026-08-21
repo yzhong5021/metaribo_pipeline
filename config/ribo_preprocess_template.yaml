@@ -1,10 +1,10 @@
-samplesheet: config/samples_ribo.csv # input samples
-cutadapt_args: "-a AAAAAAAAAACAAAAAAAAAA --overlap 4 --trimmed-only -m 31 -M 56 -q 28"
-contains_umi: true
-umitools_extract_args: "--bc-pattern=NNNNNNNNNNNNNNNN"
-bt2_args: "--very-sensitive --end-to-end --score-min L,0,0 -k 2 --no-unal"
-umitools_dedup_args: "--method=directional --read-length --edit-distance-threshold=0"
-remove_ncrna: true
-remove_multimappers: true
-seed: 1000
-threads: 16
+samplesheet: config/samples_ribo.csv # input ribo samples; relative paths resolved from root.
+cutadapt_args: "-a AAAAAAAAAACAAAAAAAAAA --overlap 4 --trimmed-only -m 31 -M 56 -q 28" # specify adapter, length/quality filtering
+contains_umi: true # Enable if reads contain UMIs
+umitools_extract_args: "--extract-method=regex --bc-pattern=^(?P<umi_1>.{12})(?P<discard_1>.{4})" # extract a 12-nt 5' UMI, then discard 4nt; change for alternative UMI designs.
+bt2_args: "--very-sensitive --end-to-end --score-min L,0,0 -k 2 --no-unal" # exact, end-to-end alignment
+umitools_dedup_args: "--method=directional --read-length --edit-distance-threshold=0" # position-based deduplication requiring exact UMI and read-length matches
+remove_ncrna: true # remove reads overlapping Bakta rRNA, tRNA tmRNA
+remove_multimappers: true # only retain unique reads
+seed: 1000 # random seed for Bowtie2 (tie handling)
+threads: 16 # number of worker threads for preprocessing

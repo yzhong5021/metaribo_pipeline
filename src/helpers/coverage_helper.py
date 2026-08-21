@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -99,7 +99,7 @@ def bin_ribo_counts(bam_path, master_df, method="overlap"):
         raise ValueError("method must be one of: overlap, median, center, 5prime, 5p, 3prime, 3p")
 
     cds_ids, _df = _extract_cds_ids(master_df)
-    counts = pd.Series(0, index=cds_ids, name="binned_counts", dtype="int64")
+    counts_by_cds = Counter()
     records_by_contig = _master_records(master_df)
 
     with pysam.AlignmentFile(bam_path, "rb") as bam:
@@ -131,9 +131,14 @@ def bin_ribo_counts(bam_path, master_df, method="overlap"):
                         break
 
             if best_cds is not None:
-                counts.loc[best_cds] += 1
+                counts_by_cds[best_cds] += 1
 
-    return counts
+    return pd.Series(
+        [counts_by_cds.get(cds_id, 0) for cds_id in cds_ids],
+        index=cds_ids,
+        name="binned_counts",
+        dtype="int64",
+    )
 
 
 def build_metagene(bam_path, master_df, anchor, window, length=None):
@@ -175,6 +180,7 @@ def build_metagene(bam_path, master_df, anchor, window, length=None):
 
                 v_start = np.zeros(L, dtype=float)
                 v_stop = np.zeros(L, dtype=float)
+                gene_total = 0
                 fetch_start = max(0, min(anchor_start, anchor_stop) - edge_pad)
                 fetch_end = min(contig_len, max(anchor_start, anchor_stop) + edge_pad + 1)
 
@@ -186,6 +192,10 @@ def build_metagene(bam_path, master_df, anchor, window, length=None):
                         continue
 
                     p = _read_point(aln, anchor)
+                    five_prime = _read_point(aln, "5p")
+                    if start0 <= five_prime < end0:
+                        gene_total += 1
+
                     if has_start:
                         rel = p - anchor_start
                         if is_minus:
@@ -200,11 +210,13 @@ def build_metagene(bam_path, master_df, anchor, window, length=None):
                         if -window <= rel < window:
                             v_stop[rel + window] += 1
 
+                if gene_total == 0:
+                    continue
                 if has_start:
-                    metagene_start += v_start
+                    metagene_start += v_start / gene_total
                     n_used_start += 1
                 if has_stop:
-                    metagene_stop += v_stop
+                    metagene_stop += v_stop / gene_total
                     n_used_stop += 1
 
     positions = np.arange(-window, window)
@@ -213,8 +225,6 @@ def build_metagene(bam_path, master_df, anchor, window, length=None):
             "position": positions,
             "metagene_start": metagene_start,
             "metagene_stop": metagene_stop,
-            "metagene_start_mean": metagene_start / n_used_start if n_used_start else metagene_start,
-            "metagene_stop_mean": metagene_stop / n_used_stop if n_used_stop else metagene_stop,
             "n_used_start": n_used_start,
             "n_used_stop": n_used_stop,
         }
@@ -223,28 +233,27 @@ def build_metagene(bam_path, master_df, anchor, window, length=None):
 
 def plot_metagene(metagene_df, anchor, window, title):
     """
-    Plots the start and stop metagene means within a specified window.
+    Plot summed, per-CDS-normalized start and stop metagene profiles.
     """
+    window = int(window)
     if isinstance(metagene_df, dict):
         x = np.arange(-window, window)
-        start = np.asarray(metagene_df["metagene_start_mean"])
-        stop = np.asarray(metagene_df["metagene_stop_mean"])
+        start = np.asarray(metagene_df["metagene_start"])
+        stop = np.asarray(metagene_df["metagene_stop"])
     else:
         x = metagene_df["position"].to_numpy()
-        start = metagene_df["metagene_start_mean"].to_numpy()
-        stop = metagene_df["metagene_stop_mean"].to_numpy()
+        start = metagene_df["metagene_start"].to_numpy()
+        stop = metagene_df["metagene_stop"].to_numpy()
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
-    for ax, y, label, color in [
-        (axes[0], start, "Start", "tab:blue"),
-        (axes[1], stop, "Stop", "tab:red"),
-    ]:
-        ax.plot(x, y, color=color)
-        ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
-        ax.set_title(f"{label}")
-        ax.set_xlabel("Distance (nt)")
-        ax.set_xlim(-window, window - 1)
-    axes[0].set_ylabel("Mean ribo-seq counts per CDS")
+    fig, axes = plt.subplots(1, 2, sharey=True)
+    for ax, y, label in (
+        (axes[0], start, "Start"),
+        (axes[1], stop, "Stop"),
+    ):
+        ax.plot(x, y)
+        ax.axvline(0, color="black", linestyle="--")
+        ax.set(title=label, xlabel="Distance (nt)", xlim=(-window, window - 1))
+    axes[0].set_ylabel("Summed per-CDS normalized 5′-end signal")
     fig.suptitle(str(title).strip())
     fig.tight_layout()
     return fig

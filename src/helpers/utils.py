@@ -8,6 +8,7 @@ import os
 import shlex
 import shutil
 from pathlib import Path
+from typing import Sequence
 
 from master_config import DEFAULT_MASTER_CONFIG, MasterConfigError, load_master
 
@@ -17,7 +18,6 @@ except ImportError:
     yaml = None
 
 
-MASTER_CONFIG = Path(os.environ.get("MASTER_CONFIG", DEFAULT_MASTER_CONFIG)).expanduser()
 SAMPLE_COLUMNS = [
     "sample",
     "group",
@@ -40,50 +40,45 @@ def fail(message: str) -> None:
 def load_yaml(path: Path) -> dict:
     if yaml is None:
         fail("PyYAML is required to read workflow YAML config files")
-    with path.open() as handle:
-        data = yaml.safe_load(handle) or {}
+    try:
+        with path.open() as handle:
+            data = yaml.safe_load(handle) or {}
+    except OSError as exc:
+        fail(f"Cannot read YAML file {path}: {exc}")
+    except yaml.YAMLError as exc:
+        fail(f"Malformed YAML in {path}: {exc}")
     if not isinstance(data, dict):
         fail(f"Expected mapping in YAML file: {path}")
     return data
 
 
-def master_config(path: Path = MASTER_CONFIG) -> dict:
+def default_master_config_path() -> Path:
+    return Path(os.environ.get("MASTER_CONFIG", DEFAULT_MASTER_CONFIG)).expanduser()
+
+
+def master_config(path: Path | None = None) -> dict:
     try:
-        return load_master(path)
-    except MasterConfigError as exc:
+        return load_master(path or default_master_config_path())
+    except (MasterConfigError, OSError, yaml.YAMLError) as exc:
         fail(str(exc))
 
 
-MASTER_VALUES = master_config()
-ROOT = MASTER_VALUES["root"]
-SCRATCH_ROOT = MASTER_VALUES["scratch"]
-RESULTS_DIR = MASTER_VALUES["results_dir"]
-LOGS_DIR = MASTER_VALUES["logs_dir"]
-FILE_MANIFEST = MASTER_VALUES["file_manifest"]
-RIBO_PREPROCESS_PARAMS = MASTER_VALUES["ribo_preprocess_params"]
-METAGENOME_PREPROCESS_PARAMS = MASTER_VALUES["metagenome_preprocess_params"]
-CONTIG_ANNOTATION_PARAMS = MASTER_VALUES["contig_annotation_params"]
-METAGENOME_SCRATCH = MASTER_VALUES["metagenome_scratch"]
-ANNOTATION_SCRATCH = MASTER_VALUES["annotation_scratch"]
-RIBO_SCRATCH = MASTER_VALUES["ribo_scratch"]
-METAGENOME_WORK = MASTER_VALUES["metagenome_work"]
-ANNOTATION_WORK = MASTER_VALUES["annotation_work"]
-RIBO_WORK = MASTER_VALUES["ribo_work"]
-METAGENOME_RESULTS = MASTER_VALUES["metagenome_results"]
-RIBO_RESULTS = MASTER_VALUES["ribo_results"]
-COVERAGE_RESULTS = MASTER_VALUES["coverage_results"]
+def require_keys(config: dict, keys: Sequence[str], source: Path) -> None:
+    missing = [key for key in keys if key not in config]
+    if missing:
+        fail(f"{source} is missing required keys: {', '.join(missing)}")
 
 
-def resolve_repo_path(value: str | Path) -> Path:
+def resolve_repo_path(value: str | Path, master: dict) -> Path:
     path = Path(value).expanduser()
-    return path if path.is_absolute() else ROOT / path
+    return path if path.is_absolute() else master["root"] / path
 
 
-def resolve_scratch_path(value: str | Path) -> Path:
+def resolve_scratch_path(value: str | Path, master: dict) -> Path:
     path = Path(value).expanduser()
     if path.is_absolute():
         return path
-    return SCRATCH_ROOT / path
+    return master["scratch"] / path
 
 
 def resolve_command(command: str) -> str:
@@ -93,6 +88,15 @@ def resolve_command(command: str) -> str:
     if resolved is None:
         fail(f"Command not found on PATH: {command}")
     return resolved
+
+
+def parse_shell_args(value: object, key: str, source: Path) -> list[str]:
+    if not isinstance(value, str):
+        fail(f"{source} parameter {key} must be a string")
+    try:
+        return shlex.split(value)
+    except ValueError as exc:
+        fail(f"Malformed shell arguments for {key} in {source}: {exc}")
 
 
 def ensure_dir(path: Path) -> None:
@@ -119,7 +123,6 @@ def copy_if_needed(source: Path, target: Path) -> Path:
 def copy_bam_index(source_bam: Path, target_bam: Path) -> None:
     candidates = [
         Path(str(source_bam) + ".bai"),
-        source_bam.with_suffix(source_bam.suffix + ".bai"),
         source_bam.with_suffix(".bai"),
     ]
     source_index = next((path for path in candidates if path.exists()), None)
@@ -137,13 +140,25 @@ def load_manifest(path: Path) -> dict:
     # The manifest is only stage outputs; sample inputs stay in the config CSVs.
     if not path.exists():
         return {"metagenome": {}}
-    with path.open() as handle:
-        data = json.load(handle)
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        fail(f"Cannot read manifest {path}: {exc}")
+    if not text.strip():
+        return {"metagenome": {}}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        fail(f"Malformed JSON in manifest {path}: {exc}")
     if not isinstance(data, dict):
         fail(f"Manifest must be a JSON object: {path}")
     if "samples" in data:
         fail(f"{path} must not contain sample inputs; config/samples.csv is the only sample entry point")
     data.setdefault("metagenome", {})
+    if not isinstance(data["metagenome"], dict):
+        fail(f"Manifest metagenome entry must be a JSON object: {path}")
+    if "ribo" in data and not isinstance(data["ribo"], dict):
+        fail(f"Manifest ribo entry must be a JSON object: {path}")
     return data
 
 
@@ -154,7 +169,7 @@ def save_manifest(path: Path, manifest: dict) -> None:
 
 
 def require_path(path: str | Path, label: str, kind: str | None = None) -> Path:
-    p = Path(path)
+    p = Path(path).expanduser()
     if not p.exists():
         fail(f"{label} does not exist: {p}")
     if kind == "file" and not p.is_file():
@@ -167,12 +182,19 @@ def require_path(path: str | Path, label: str, kind: str | None = None) -> Path:
 def read_samplesheet(samplesheet_path: Path, check_files: bool = True) -> list[dict]:
     rows: list[dict] = []
     require_path(samplesheet_path, "samples.csv", "file")
-    with samplesheet_path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames != SAMPLE_COLUMNS:
-            fail(f"{samplesheet_path} columns must be exactly: {','.join(SAMPLE_COLUMNS)}")
-        for row in reader:
-            rows.append({col: (row.get(col) or "") for col in SAMPLE_COLUMNS})
+    try:
+        with samplesheet_path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != SAMPLE_COLUMNS:
+                fail(f"{samplesheet_path} columns must be exactly: {','.join(SAMPLE_COLUMNS)}")
+            for line_no, row in enumerate(reader, start=2):
+                if None in row:
+                    fail(f"Malformed row {line_no} in {samplesheet_path}: too many fields")
+                rows.append({col: (row.get(col) or "").strip() for col in SAMPLE_COLUMNS})
+    except csv.Error as exc:
+        fail(f"Malformed CSV in {samplesheet_path}: {exc}")
+    except OSError as exc:
+        fail(f"Cannot read sample sheet {samplesheet_path}: {exc}")
     if not rows:
         fail(f"{samplesheet_path} must contain at least one sample row")
     seen: set[str] = set()
@@ -191,9 +213,12 @@ def read_samplesheet(samplesheet_path: Path, check_files: bool = True) -> list[d
     if check_files:
         for row in rows:
             for col in ("short_reads_1", "short_reads_2"):
-                path = Path(row[col])
-                if not path.exists():
-                    fail(f"Sample {row['sample']} {col} does not exist: {path}")
+                path = Path(row[col]).expanduser()
+                require_path(
+                    path,
+                    f"Sample {row['sample']} {col}",
+                    "file",
+                )
     return rows
 
 
@@ -224,5 +249,14 @@ def write_contig_to_genus(path: Path, mapping: dict[str, str]) -> None:
             writer.writerow([contig, mapping[contig]])
 
 
-def shell_assignments(values: dict[str, str | int]) -> str:
-    return "\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items())
+def shell_assignments(
+    values: dict[str, str | int | Path | Sequence[str | int | Path]],
+) -> str:
+    assignments = []
+    for key, value in values.items():
+        if isinstance(value, (list, tuple)):
+            items = " ".join(shlex.quote(str(item)) for item in value)
+            assignments.append(f"{key}=({items})")
+        else:
+            assignments.append(f"{key}={shlex.quote(str(value))}")
+    return "\n".join(assignments)

@@ -1,8 +1,8 @@
-cat_params: "-r 7 --sensitive"
-cat_db: /path/to/CAT/db
-cat_tax: /path/to/CAT/tax
-bakta_db: /path/to/bakta/db # path to Bakta database
-bakta_params: ""
-kofam_profiles: /path/to/kofam/profiles
-kofam_list: /path/to/kofam/ko_list
-threads: 16
+cat_params: "-r 7 --sensitive" # additional arguments for CAT classification
+cat_db: /path/to/CAT/db # CAT database directory
+cat_tax: /path/to/CAT/tax # CAT taxonomy directory
+bakta_db: /path/to/bakta/db # Bakta database
+bakta_params: "" # additional arguments for Bakta
+kofam_profiles: /path/to/kofam/profiles # KofamScan profiles directory
+kofam_list: /path/to/kofam/ko_list # KofamScan KO threshold list
+threads: 16 # worker threads for annotation

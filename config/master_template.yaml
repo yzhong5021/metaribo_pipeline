@@ -1,8 +1,8 @@
-root: /path/to/metaribo_pipeline # root of this project (i.e. the directory where src/ resides)
-scratch: /path/to/large/scratch/metaribo_pipeline # store large, temporary files here
-results_dir: output # store results here
-logs_dir: logs
-file_manifest: file_manifest.json
-ribo_preprocess_params: config/ribo_preprocess.yaml # path for ribo_preprocess stage config
-metagenome_preprocess_params: config/metagenome_preprocess.yaml # path for metagenome_preprocess stage config
-contig_annotation_params: config/contig_annotation.yaml # path for contig_annotation stage config
+root: /path/to/metaribo_pipeline # Project root (containing src/ and config/).
+scratch: /path/to/large/scratch/metaribo_pipeline # Scratch directory for large temporary and intermediate files.
+results_dir: output # Results directory; relative paths resolved from root.
+logs_dir: logs # Log directory; relative paths resolved from root.
+file_manifest: file_manifest.json # JSON manifest for describing intermediate file roots
+ribo_preprocess_params: config/ribo_preprocess.yaml # Ribo-ITP preprocessing config; relative paths resolved from root.
+metagenome_preprocess_params: config/metagenome_preprocess.yaml # Metagenome preprocessing config; relative paths resolved from root.
+contig_annotation_params: config/contig_annotation.yaml # Annotation config; relative paths resolved from root.

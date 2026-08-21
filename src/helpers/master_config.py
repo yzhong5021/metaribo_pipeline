@@ -88,9 +88,7 @@ def metagenome_values(master_config: Path) -> list[Path]:
     return [
         master["root"],
         master["file_manifest"],
-        master["ribo_preprocess_params"],
         master["metagenome_preprocess_params"],
-        master["contig_annotation_params"],
         master["metagenome_log"],
     ]
 
@@ -98,7 +96,6 @@ def metagenome_values(master_config: Path) -> list[Path]:
 def annotation_values(master_config: Path) -> list[Path]:
     master = load_master(master_config)
     metagenome_cfg = load_yaml(master["metagenome_preprocess_params"])
-    load_yaml(master["contig_annotation_params"])
     samplesheet = resolve_from_root(
         master["root"],
         require_key(metagenome_cfg, "samplesheet", master["metagenome_preprocess_params"]),
@@ -106,8 +103,6 @@ def annotation_values(master_config: Path) -> list[Path]:
     return [
         master["root"],
         master["file_manifest"],
-        master["ribo_preprocess_params"],
-        master["metagenome_preprocess_params"],
         master["contig_annotation_params"],
         samplesheet,
         master["annotation_log"],
@@ -120,8 +115,6 @@ def ribo_values(master_config: Path) -> list[Path]:
         master["root"],
         master["file_manifest"],
         master["ribo_preprocess_params"],
-        master["metagenome_preprocess_params"],
-        master["contig_annotation_params"],
         master["ribo_log"],
     ]
 

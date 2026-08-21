@@ -1,5 +1,5 @@
-params_file: config/params.mag.yaml # nf-core/mag specific parameter file
-nextflow_config: config/nextflow.config # nf-core/mag specific nextflow config file
-samplesheet: config/samples.csv # input samples
-gtdb_db: null
-apptainer_cache: .apptainer_cache
+params_file: config/params.mag.yaml # nf-core/mag's parameter file; relative paths resolved from root.
+nextflow_config: config/nextflow.config # nextflow config file (configure max runtime, stage-specific threads, etc.); relative paths resolved from root.
+samplesheet: config/samples.csv # input metagenome samples; relative paths resolved from root.
+gtdb_db: /path/to/gtdbtk/release226 # GTDB-Tk database directory; if null, skips GTDB-Tk.
+apptainer_cache: .apptainer_cache # cache directory for nextflow; relative paths resolved from scratch.

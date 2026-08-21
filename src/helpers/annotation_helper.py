@@ -9,19 +9,16 @@ import sys
 from pathlib import Path
 
 from utils import (
-    ANNOTATION_SCRATCH,
-    ANNOTATION_WORK,
-    CONTIG_ANNOTATION_PARAMS,
-    FILE_MANIFEST,
-    METAGENOME_RESULTS,
-    ROOT,
     WorkflowError,
     ensure_dir,
     fail,
     load_manifest,
     load_yaml,
+    master_config,
+    parse_shell_args,
     read_contig_to_genus,
     read_samplesheet,
+    require_keys,
     require_path,
     resolve_command,
     save_manifest,
@@ -32,97 +29,148 @@ from utils import (
 
 # for cat output data matching
 GENUS_RE = re.compile(r"([^\t;]+?)\s+\(genus\):\s*([0-9]+(?:\.[0-9]+)?)")
+ANNOTATION_CONFIG_KEYS = (
+    "cat_params",
+    "cat_db",
+    "cat_tax",
+    "bakta_db",
+    "bakta_params",
+    "kofam_profiles",
+    "kofam_list",
+    "threads",
+)
 
 
-def check_paths(manifest_path: Path, samplesheet: Path, annotation_config: Path, version_config: Path | None = None) -> None:
-    cfg = load_yaml(annotation_config)
+def load_annotation_config(path: Path) -> dict:
+    cfg = load_yaml(path)
+    require_keys(cfg, ANNOTATION_CONFIG_KEYS, path)
+    for key in ("cat_db", "cat_tax", "bakta_db", "kofam_profiles", "kofam_list"):
+        raw_value = cfg[key]
+        value = "" if raw_value is None else str(raw_value).strip()
+        if not value:
+            if key in {"cat_db", "cat_tax"}:
+                cfg[key] = None
+                continue
+            fail(f"{path} parameter {key} must be a path")
+        cfg[key] = str(Path(value).expanduser())
+    if (
+        isinstance(cfg["threads"], bool)
+        or not isinstance(cfg["threads"], int)
+        or cfg["threads"] < 1
+    ):
+        fail(f"{path} parameter threads must be a positive integer")
+    return cfg
+
+
+def cat_is_enabled(cfg: dict) -> bool:
+    if (cfg["cat_db"] is None) != (cfg["cat_tax"] is None):
+        fail("cat_db and cat_tax must both be configured or both be null")
+    return cfg["cat_db"] is not None
+
+
+def validate_annotation_inputs(
+    manifest_path: Path,
+    samples: list[dict],
+    check_files: bool,
+) -> dict:
+    metagenome = load_manifest(manifest_path).get("metagenome", {})
+    for key in ("contigs", "bowtie2"):
+        values = metagenome.get(key)
+        if not isinstance(values, dict):
+            fail(f"Manifest metagenome.{key} is missing; run preprocessing collection first")
+        missing = [row["sample"] for row in samples if row["sample"] not in values]
+        if missing:
+            fail(
+                f"Manifest metagenome.{key} is missing samples: "
+                f"{', '.join(missing)}"
+            )
+        if check_files:
+            for row in samples:
+                sample = row["sample"]
+                require_path(values[sample], f"{sample} {key}", "file")
+    genus_paths = metagenome.get("contig_to_genus", {})
+    if not isinstance(genus_paths, dict):
+        fail("Manifest metagenome.contig_to_genus must be a JSON object")
+    if check_files:
+        for row in samples:
+            sample = row["sample"]
+            if sample in genus_paths:
+                require_path(
+                    genus_paths[sample],
+                    f"{sample} contig-to-genus table",
+                    "file",
+                )
+    return metagenome
+
+
+def check_paths(manifest_path: Path, samplesheet: Path, annotation_config: Path) -> None:
+    cfg = load_annotation_config(annotation_config)
     samples = read_samplesheet(samplesheet, check_files=False)
-    cat_db_value = str(cfg.get("cat_db") or "").strip()  # TEMP: BYPASS CAT
-    cat_tax_value = str(cfg.get("cat_tax") or "").strip()  # TEMP: BYPASS CAT
-    cat_db = Path(cat_db_value).expanduser()  # TEMP: BYPASS CAT
-    cat_tax = Path(cat_tax_value).expanduser()  # TEMP: BYPASS CAT
-    run_cat = all((  # TEMP: BYPASS CAT
-        cat_db_value,  # TEMP: BYPASS CAT
-        cat_tax_value,  # TEMP: BYPASS CAT
-        cat_db.is_dir(),  # TEMP: BYPASS CAT
-        cat_tax.is_dir(),  # TEMP: BYPASS CAT
-    ))  # TEMP: BYPASS CAT
-    if run_cat:  # TEMP: BYPASS CAT
-        resolve_command("CAT_pack")  # TEMP: BYPASS CAT
-    else:  # TEMP: BYPASS CAT
-        print(  # TEMP: BYPASS CAT
-            "WARNING: CAT database/taxonomy missing; skipping CAT classification",  # TEMP: BYPASS CAT
-            file=sys.stderr,  # TEMP: BYPASS CAT
-        )  # TEMP: BYPASS CAT
-    for command in ("bakta", "bedtools", "exec_annotation"):  # TEMP: BYPASS CAT
+    if cat_is_enabled(cfg):
+        resolve_command("CAT_pack")
+        require_path(cfg["cat_db"], "CAT database", "dir")
+        require_path(cfg["cat_tax"], "CAT taxonomy", "dir")
+    else:
+        print("CAT classification disabled (cat_db and cat_tax are null)")
+    for command in ("bakta", "bedtools", "exec_annotation"):
         resolve_command(command)
     require_path(cfg["bakta_db"], "Bakta database", "dir")
     require_path(cfg["kofam_profiles"], "Kofam profiles", "dir")
     require_path(cfg["kofam_list"], "Kofam ko_list", "file")
-    metagenome = load_manifest(manifest_path).get("metagenome", {})
-    required_keys = ["contigs", "bowtie2"]
-    for key in required_keys:
-        if key not in metagenome:
-            fail(f"Manifest metagenome.{key} is missing; run preprocessing collection first")
-        missing = [row["sample"] for row in samples if row["sample"] not in metagenome[key]]
-        if missing:
-            fail(f"Manifest metagenome.{key} is missing samples from {samplesheet}: {', '.join(missing)}")
+    validate_annotation_inputs(manifest_path, samples, check_files=True)
     print("paths are all valid for metagenome annotation")
 
 
-def config_shell(annotation_config: Path, version_config: Path | None = None) -> str:
-    cfg = load_yaml(annotation_config)
-    cat_db_value = str(cfg.get("cat_db") or "").strip()  # TEMP: BYPASS CAT
-    cat_tax_value = str(cfg.get("cat_tax") or "").strip()  # TEMP: BYPASS CAT
-    cat_db = Path(cat_db_value).expanduser()  # TEMP: BYPASS CAT
-    cat_tax = Path(cat_tax_value).expanduser()  # TEMP: BYPASS CAT
-    run_cat = all((  # TEMP: BYPASS CAT
-        cat_db_value,  # TEMP: BYPASS CAT
-        cat_tax_value,  # TEMP: BYPASS CAT
-        cat_db.is_dir(),  # TEMP: BYPASS CAT
-        cat_tax.is_dir(),  # TEMP: BYPASS CAT
-    ))  # TEMP: BYPASS CAT
+def config_shell(annotation_config: Path, master: dict) -> str:
+    cfg = load_annotation_config(annotation_config)
+    run_cat = cat_is_enabled(cfg)
     values = {
-        "RUN_CAT": int(run_cat),  # TEMP: BYPASS CAT
-        "CAT_PATH": (  # TEMP: BYPASS CAT
-            resolve_command("CAT_pack") if run_cat else ""  # TEMP: BYPASS CAT
-        ),  # TEMP: BYPASS CAT
-        "CAT_PARAMS": cfg.get("cat_params", ""),
-        "CAT_DB": cfg.get("cat_db", ""),
-        "CAT_TAX": cfg.get("cat_tax", ""),
+        "RUN_CAT": int(run_cat),
+        "CAT_PATH": resolve_command("CAT_pack") if run_cat else "",
+        "CAT_PARAM_ARGS": parse_shell_args(
+            cfg["cat_params"], "cat_params", annotation_config
+        ),
+        "CAT_DB": cfg["cat_db"] or "",
+        "CAT_TAX": cfg["cat_tax"] or "",
         "BAKTA": resolve_command("bakta"),
         "BAKTA_DB": cfg["bakta_db"],
-        "BAKTA_PARAMS": cfg.get("bakta_params", ""),
+        "BAKTA_PARAM_ARGS": parse_shell_args(
+            cfg["bakta_params"], "bakta_params", annotation_config
+        ),
         "BEDTOOLS": resolve_command("bedtools"),
         "EXEC_ANNOTATION": resolve_command("exec_annotation"),
         "KOFAM_PROFILES": cfg["kofam_profiles"],
         "KOFAM_LIST": cfg["kofam_list"],
         "THREADS": cfg["threads"],
-        "ANNOT_OUTDIR": ANNOTATION_SCRATCH,
-        "CAT_DIR": ANNOTATION_SCRATCH / "CAT",
-        "BAKTA_DIR": ANNOTATION_SCRATCH / "bakta",
-        "ANNOT_WORKDIR": ANNOTATION_WORK,
-        "LOCAL_OUTDIR": METAGENOME_RESULTS,
-        "CONTIG_TO_GENUS_DIR": METAGENOME_RESULTS / "contig_to_genus",
-        "BAKTA_CDS_GFF_DIR": METAGENOME_RESULTS / "bakta_cds_annotations_gff",
-        "BAKTA_NCRNA_BED_DIR": METAGENOME_RESULTS / "bakta_ncrna_bed",
-        "BAKTA_CDS_BED_DIR": METAGENOME_RESULTS / "bakta_cds_bed",
-        "BAKTA_CDS_FAA_DIR": METAGENOME_RESULTS / "bakta_cds_faa",
-        "BAKTA_COVERAGE_DIR": METAGENOME_RESULTS / "bakta_gene_mean_coverage",
-        "KOFAM_DIR": METAGENOME_RESULTS / "kofam_annotations",
-        "MASTER_SHEET_DIR": METAGENOME_RESULTS / "master_sheets",
+        "CAT_DIR": master["annotation_scratch"] / "CAT",
+        "BAKTA_DIR": master["annotation_scratch"] / "bakta",
+        "ANNOT_WORKDIR": master["annotation_work"],
+        "LOCAL_OUTDIR": master["metagenome_results"],
+        "CONTIG_TO_GENUS_DIR": master["metagenome_results"] / "contig_to_genus",
+        "BAKTA_CDS_GFF_DIR": master["metagenome_results"] / "bakta_cds_annotations_gff",
+        "BAKTA_NCRNA_BED_DIR": master["metagenome_results"] / "bakta_ncrna_bed",
+        "BAKTA_CDS_BED_DIR": master["metagenome_results"] / "bakta_cds_bed",
+        "BAKTA_CDS_FAA_DIR": master["metagenome_results"] / "bakta_cds_faa",
+        "BAKTA_COVERAGE_DIR": master["metagenome_results"] / "bakta_gene_mean_coverage",
+        "KOFAM_DIR": master["metagenome_results"] / "kofam_annotations",
+        "MASTER_SHEET_DIR": master["metagenome_results"] / "master_sheets",
     }
     return shell_assignments(values)
 
 
-def list_inputs(manifest_path: Path, samplesheet: Path, annotation_config: Path) -> None:
-    manifest = load_manifest(manifest_path)
+def list_inputs(manifest_path: Path, samplesheet: Path) -> None:
     samples = read_samplesheet(samplesheet, check_files=False)
-    metagenome = manifest["metagenome"]
+    metagenome = validate_annotation_inputs(
+        manifest_path, samples, check_files=False
+    )
     print("sample_id\tcontigs\tcontig_to_genus\tbam")
     for row in samples:
         sample = row["sample"]
-        print(f"{sample}\t{metagenome['contigs'][sample]}\tNA\t{metagenome['bowtie2'][sample]}")
+        genus_path = metagenome.get("contig_to_genus", {}).get(sample, "NA")
+        print(
+            f"{sample}\t{metagenome['contigs'][sample]}\t"
+            f"{genus_path}\t{metagenome['bowtie2'][sample]}"
+        )
 
 
 def parse_cat_translated(path: Path) -> dict[str, tuple[str, float]]:
@@ -138,9 +186,15 @@ def parse_cat_translated(path: Path) -> dict[str, tuple[str, float]]:
     return assignments
 
 
-def merge_cat_assignments(contig_to_genus_path: Path, cat_translated_path: Path) -> int:
+def merge_cat_assignments(
+    contig_to_genus_path: Path,
+    cat_translated_path: Path,
+    reset_existing: bool = False,
+) -> int:
     # Keep MAG-propagated genus calls, and let CAT fill contigs still missing a genus.
-    existing = read_contig_to_genus(contig_to_genus_path)
+    existing = (
+        {} if reset_existing else read_contig_to_genus(contig_to_genus_path)
+    )
     updated = 0
     for contig, (genus, _score) in parse_cat_translated(cat_translated_path).items():
         if contig not in existing:
@@ -278,9 +332,19 @@ def parse_kofam(path: Path) -> dict[str, str]:
             if not line.strip() or line.startswith("#"):
                 continue
             fields = line.rstrip("\n").split("\t")
-            cds_id = fields[1] if fields[0] == "*" and len(fields) > 2 else fields[0]
-            search_fields = fields[2:] if fields[0] == "*" and len(fields) > 2 else fields[1:]
-            ko = next((field for field in search_fields if ko_re.match(field)), "")
+            if len(fields) < 3 or fields[0] != "*":
+                continue
+            cds_id = fields[1].strip()
+            if not cds_id:
+                continue
+            ko = next(
+                (
+                    field.strip()
+                    for field in fields[2:]
+                    if ko_re.fullmatch(field.strip())
+                ),
+                "",
+            )
             if ko:
                 annotations.setdefault(cds_id, []).append(ko)
     return {cds_id: ",".join(sorted(set(kos))) for cds_id, kos in annotations.items()}
@@ -315,16 +379,31 @@ def make_master_sheet(cds_gff: Path, contig_to_genus_path: Path | None, coverage
 make_annotation_summary = make_master_sheet
 
 
-def update_manifest(manifest_path: Path, sample: str, cds_gff: Path, ncrna_bed: Path, kofam_tsv: Path, master_sheet_tsv: Path) -> None:
+def update_manifest(
+    manifest_path: Path,
+    sample: str,
+    cds_gff: Path,
+    ncrna_bed: Path,
+    kofam_tsv: Path,
+    master_sheet_tsv: Path,
+    contig_to_genus_path: Path | None = None,
+) -> None:
     # Add the annotation files the ribo step and analysis notebooks read later.
     manifest = load_manifest(manifest_path)
     metagenome = manifest.setdefault("metagenome", {})
-    for key in ("bakta_cds_annotations_gff", "bakta_ncrna_bed", "kofam_annotations", "master_sheets"):
-        metagenome.setdefault(key, {})
-    metagenome["bakta_cds_annotations_gff"][sample] = str(cds_gff)
-    metagenome["bakta_ncrna_bed"][sample] = str(ncrna_bed)
-    metagenome["kofam_annotations"][sample] = str(kofam_tsv)
-    metagenome["master_sheets"][sample] = str(master_sheet_tsv)
+    outputs = {
+        "bakta_cds_annotations_gff": cds_gff,
+        "bakta_ncrna_bed": ncrna_bed,
+        "kofam_annotations": kofam_tsv,
+        "master_sheets": master_sheet_tsv,
+    }
+    if contig_to_genus_path is not None:
+        outputs["contig_to_genus"] = contig_to_genus_path
+    for key, path in outputs.items():
+        entries = metagenome.setdefault(key, {})
+        if not isinstance(entries, dict):
+            fail(f"Manifest metagenome.{key} must be a JSON object")
+        entries[sample] = str(path)
     save_manifest(manifest_path, manifest)
 
 
@@ -332,20 +411,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="metagenome annotation helper")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("check-paths")
-    p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
-    p.add_argument("--samplesheet", type=Path, default=ROOT / "config" / "samples.csv")
-    p.add_argument("--annotation-config", type=Path, default=CONTIG_ANNOTATION_PARAMS)
-    p.add_argument("--versions", type=Path, default=None)
+    p.add_argument("--manifest", type=Path, default=None)
+    p.add_argument("--samplesheet", type=Path, default=None)
+    p.add_argument("--annotation-config", type=Path, default=None)
     p = sub.add_parser("config-shell")
-    p.add_argument("--annotation-config", type=Path, default=CONTIG_ANNOTATION_PARAMS)
-    p.add_argument("--versions", type=Path, default=None)
+    p.add_argument("--annotation-config", type=Path, default=None)
     p = sub.add_parser("list-inputs")
-    p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
-    p.add_argument("--samplesheet", type=Path, default=ROOT / "config" / "samples.csv")
-    p.add_argument("--annotation-config", type=Path, default=CONTIG_ANNOTATION_PARAMS)
+    p.add_argument("--manifest", type=Path, default=None)
+    p.add_argument("--samplesheet", type=Path, default=None)
+    p.add_argument("--annotation-config", type=Path, default=None)
     p = sub.add_parser("merge-cat")
     p.add_argument("--contig-to-genus", type=Path, required=True)
     p.add_argument("--cat-translated", type=Path, required=True)
+    p.add_argument("--reset-existing", action="store_true")
     p = sub.add_parser("process-bakta")
     p.add_argument("--sample", required=True)
     p.add_argument("--bakta-run-dir", type=Path, required=True)
@@ -360,12 +438,13 @@ def main() -> int:
         p.add_argument("--kofam", type=Path, required=True)
         p.add_argument("--output", type=Path, required=True)
     p = sub.add_parser("update-manifest")
-    p.add_argument("--manifest", type=Path, default=FILE_MANIFEST)
+    p.add_argument("--manifest", type=Path, default=None)
     p.add_argument("--sample", required=True)
     p.add_argument("--cds-gff", type=Path, required=True)
     p.add_argument("--ncrna-bed", type=Path, required=True)
     p.add_argument("--kofam", type=Path, required=True)
     p.add_argument("--master-sheet", type=Path, required=True)
+    p.add_argument("--contig-to-genus", type=Path)
     p = sub.add_parser("sort-bed-for-coverage")
     p.add_argument("--fasta", type=Path, required=True)
     p.add_argument("--bed", type=Path, required=True)
@@ -373,14 +452,30 @@ def main() -> int:
     p.add_argument("--genome", type=Path, required=True)
     args = parser.parse_args()
     try:
+        if args.command in {"check-paths", "config-shell", "list-inputs"}:
+            master = master_config()
+            annotation_config = (
+                args.annotation_config or master["contig_annotation_params"]
+            )
+            manifest = getattr(args, "manifest", None) or master["file_manifest"]
+            samplesheet = (
+                getattr(args, "samplesheet", None)
+                or master["root"] / "config" / "samples.csv"
+            )
         if args.command == "check-paths":
-            check_paths(args.manifest, args.samplesheet, args.annotation_config, args.versions)
+            check_paths(manifest, samplesheet, annotation_config)
         elif args.command == "config-shell":
-            print(config_shell(args.annotation_config, args.versions))
+            print(config_shell(annotation_config, master))
         elif args.command == "list-inputs":
-            list_inputs(args.manifest, args.samplesheet, args.annotation_config)
+            list_inputs(manifest, samplesheet)
         elif args.command == "merge-cat":
-            print(merge_cat_assignments(args.contig_to_genus, args.cat_translated))
+            print(
+                merge_cat_assignments(
+                    args.contig_to_genus,
+                    args.cat_translated,
+                    args.reset_existing,
+                )
+            )
         elif args.command == "process-bakta":
             cds_gff, ncrna_bed, cds_bed, cds_faa, num_cds, num_ncrna = process_bakta_outputs(args.sample, args.bakta_run_dir, args.bakta_outdir, args.local_outdir)
             if args.shell:
@@ -390,7 +485,16 @@ def main() -> int:
         elif args.command in {"make-master-sheet", "make-summary"}:
             make_master_sheet(args.cds_gff, args.contig_to_genus, args.coverage, args.kofam, args.output)
         elif args.command == "update-manifest":
-            update_manifest(args.manifest, args.sample, args.cds_gff, args.ncrna_bed, args.kofam, args.master_sheet)
+            manifest = args.manifest or master_config()["file_manifest"]
+            update_manifest(
+                manifest,
+                args.sample,
+                args.cds_gff,
+                args.ncrna_bed,
+                args.kofam,
+                args.master_sheet,
+                args.contig_to_genus,
+            )
         elif args.command == "sort-bed-for-coverage":
             sort_bed_for_coverage(args.fasta, args.bed, args.sorted_bed, args.genome)
     except WorkflowError as exc:
