@@ -28,6 +28,7 @@ function metaribo_parse_master_config() {
     esac
   done
 
+  MASTER_CONFIG="$(realpath -- "${MASTER_CONFIG}")"
   export MASTER_CONFIG
 }
 
